@@ -8,7 +8,296 @@ import {
   type PropsWithChildren
 } from 'react';
 import { parseScenario } from '@/lib/scenarioParser';
-import { ScenarioFrame, WaymoScenario } from '@/types/scenario';
+import {
+  ScenarioAgent,
+  ScenarioBounds,
+  ScenarioFrame,
+  ScenarioFrameAgentState,
+  TrajectoryPoint,
+  WaymoScenario
+} from '@/types/scenario';
+
+export type EditingMode = 'inspect' | 'trajectory' | 'road';
+export type EditingTool = 'select' | 'trajectory-record' | 'trajectory-drive' | 'trajectory-edit' | 'road-add' | 'road-edit';
+export type EditingEntityKind = 'agent' | 'roadEdge';
+
+export interface EditingEntityRef {
+  kind: EditingEntityKind;
+  id: string;
+}
+
+export interface TrajectorySample {
+  x: number;
+  y: number;
+  timestampMs: number;
+}
+
+export interface TrajectoryDraft {
+  agentId: string;
+  startedAtMs: number;
+  lastSampledAtMs: number;
+  samples: TrajectorySample[];
+}
+
+export interface EditingHistoryEntry {
+  id: string;
+  label: string;
+  timestamp: number;
+}
+
+interface EditingHistoryState {
+  undoStack: EditingHistoryEntry[];
+  redoStack: EditingHistoryEntry[];
+}
+
+export interface EditingState {
+  mode: EditingMode;
+  activeTool: EditingTool;
+  hoveredEntity?: EditingEntityRef;
+  selectedEntity?: EditingEntityRef;
+  isRecording: boolean;
+  trajectoryDraft?: TrajectoryDraft;
+  history: EditingHistoryState;
+}
+
+function createInitialEditingState(): EditingState {
+  return {
+    mode: 'inspect',
+    activeTool: 'select',
+    hoveredEntity: undefined,
+    selectedEntity: undefined,
+    isRecording: false,
+    trajectoryDraft: undefined,
+    history: {
+      undoStack: [],
+      redoStack: []
+    }
+  };
+}
+
+function computeBoundsFromAgents(agents: ScenarioAgent[]): ScenarioBounds | undefined {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  let hasPoints = false;
+
+  agents.forEach((agent) => {
+    agent.trajectory.forEach((point) => {
+      if (point.valid === false) {
+        return;
+      }
+
+      hasPoints = true;
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    });
+  });
+
+  if (!hasPoints) {
+    return undefined;
+  }
+
+  return { minX, maxX, minY, maxY };
+}
+
+function buildFramesFromAgents(
+  agents: ScenarioAgent[],
+  frameIntervalMicros: number,
+  frameCountOverride?: number
+): ScenarioFrame[] {
+  const computedFrameCount = agents.reduce((max, agent) => {
+    const agentFrameCount = agent.trajectory.reduce((innerMax, point) => {
+      if (typeof point.frameIndex === 'number') {
+        return Math.max(innerMax, point.frameIndex + 1);
+      }
+      return innerMax;
+    }, 0);
+    return Math.max(max, agentFrameCount);
+  }, 0);
+
+  const frameCount = frameCountOverride != null
+    ? Math.max(frameCountOverride, computedFrameCount)
+    : computedFrameCount;
+
+  if (frameCount <= 0) {
+    return [];
+  }
+
+  const frames: ScenarioFrame[] = Array.from({ length: frameCount }, (_, index) => ({
+    index,
+    timestampMicros: index * frameIntervalMicros,
+    agents: [] as ScenarioFrameAgentState[]
+  }));
+
+  agents.forEach((agent) => {
+    const { id, type, dimensions } = agent;
+    agent.trajectory.forEach((point) => {
+      if (point.frameIndex === undefined) {
+        return;
+      }
+
+      const frame = frames[point.frameIndex];
+      if (!frame) {
+        return;
+      }
+
+      frame.agents.push({
+        id,
+        type,
+        x: point.x,
+        y: point.y,
+        z: point.z,
+        heading: point.heading,
+        width: dimensions?.width,
+        length: dimensions?.length,
+        height: dimensions?.height,
+        speed: point.speed,
+        velocityX: point.velocityX,
+        velocityY: point.velocityY,
+        valid: point.valid !== false
+      });
+    });
+  });
+
+  return frames;
+}
+
+function withScenarioRebuild(base: WaymoScenario, nextAgents: ScenarioAgent[]): WaymoScenario {
+  const frameInterval = base.metadata.frameIntervalMicros ?? DEFAULT_FRAME_INTERVAL_MICROS;
+  const frames = buildFramesFromAgents(nextAgents, frameInterval);
+  const frameCount = frames.length;
+  const durationSeconds = frameCount > 0 ? ((frameCount - 1) * frameInterval) / 1_000_000 : 0;
+
+  return {
+    ...base,
+    agents: nextAgents,
+    frames,
+    bounds: computeBoundsFromAgents(nextAgents),
+    metadata: {
+      ...base.metadata,
+      frameCount,
+      durationSeconds
+    }
+  };
+}
+
+function findFirstValidPoint(points: TrajectoryPoint[]): TrajectoryPoint | undefined {
+  return points.find((point) => point.valid !== false);
+}
+
+function shiftAgentTrajectory(
+  agent: ScenarioAgent,
+  deltaX: number,
+  deltaY: number,
+  deltaHeadingRad: number
+): ScenarioAgent {
+  const updatedTrajectory = agent.trajectory.map((point) => {
+    const nextHeading = typeof point.heading === 'number' ? point.heading + deltaHeadingRad : point.heading;
+    return {
+      ...point,
+      x: point.x + deltaX,
+      y: point.y + deltaY,
+      heading: nextHeading
+    };
+  });
+
+  return {
+    ...agent,
+    trajectory: updatedTrajectory
+  };
+}
+
+function samplesToTrajectoryPoints(samples: TrajectorySample[], frameIntervalMicros: number): TrajectoryPoint[] {
+  if (samples.length === 0) {
+    return [];
+  }
+
+  const sorted = [...samples].sort((a, b) => a.timestampMs - b.timestampMs);
+  const normalised = sorted.map((sample, index) => {
+    const clampedTime = index === 0 ? 0 : Math.max(0, sample.timestampMs - sorted[0].timestampMs);
+    return {
+      x: sample.x,
+      y: sample.y,
+      timeMs: clampedTime
+    };
+  });
+
+  // Collapse duplicate timestamps keeping the latest position.
+  const collapsed: typeof normalised = [];
+  normalised.forEach((current) => {
+    const last = collapsed[collapsed.length - 1];
+    if (!last || Math.abs(last.timeMs - current.timeMs) > 0.0001) {
+      collapsed.push(current);
+      return;
+    }
+    collapsed[collapsed.length - 1] = current;
+  });
+
+  const points = collapsed;
+  const totalDurationMs = points[points.length - 1]?.timeMs ?? 0;
+  const frameIntervalMs = frameIntervalMicros / 1000;
+  const finalFrameIndex = totalDurationMs > 0 ? Math.ceil(totalDurationMs / frameIntervalMs) : 0;
+
+  const trajectory: TrajectoryPoint[] = [];
+  let segmentIndex = 0;
+  let lastFrameTimeMs = 0;
+
+  for (let frameIndex = 0; frameIndex <= finalFrameIndex; frameIndex += 1) {
+    const targetMs = frameIndex === finalFrameIndex ? totalDurationMs : Math.min(frameIndex * frameIntervalMs, totalDurationMs);
+
+    while (segmentIndex < points.length - 2 && points[segmentIndex + 1].timeMs < targetMs) {
+      segmentIndex += 1;
+    }
+
+    const current = points[segmentIndex];
+    const next = points[Math.min(segmentIndex + 1, points.length - 1)];
+    const spanMs = Math.max(next.timeMs - current.timeMs, 0);
+    const alpha = spanMs > 0 ? Math.min(Math.max((targetMs - current.timeMs) / spanMs, 0), 1) : 0;
+
+    const x = current.x + (next.x - current.x) * alpha;
+    const y = current.y + (next.y - current.y) * alpha;
+
+    let heading = 0;
+    const headingDx = next.x - current.x;
+    const headingDy = next.y - current.y;
+    if (Math.abs(headingDx) > 1e-4 || Math.abs(headingDy) > 1e-4) {
+      heading = Math.atan2(headingDy, headingDx);
+    } else if (trajectory.length > 0) {
+      heading = trajectory[trajectory.length - 1].heading ?? 0;
+    }
+
+    let velocityX = 0;
+    let velocityY = 0;
+    let speed = 0;
+    if (trajectory.length > 0) {
+      const prev = trajectory[trajectory.length - 1];
+      const deltaTimeSec = Math.max((targetMs - lastFrameTimeMs) / 1000, 1e-4);
+      velocityX = (x - prev.x) / deltaTimeSec;
+      velocityY = (y - prev.y) / deltaTimeSec;
+      speed = Math.hypot(velocityX, velocityY);
+    }
+
+    trajectory.push({
+      frameIndex,
+      timestampMicros: Math.round(targetMs * 1000),
+      x,
+      y,
+      heading,
+      velocityX,
+      velocityY,
+      speed,
+      valid: true
+    });
+
+    lastFrameTimeMs = targetMs;
+  }
+
+  return trajectory;
+}
 
 export type ScenarioSource = 'example' | 'uploaded' | 'blank';
 
@@ -19,6 +308,23 @@ export interface ScenarioResource {
   name: string;
   source: ScenarioSource;
   scenario: WaymoScenario;
+}
+
+export interface EditingStoreValue {
+  state: EditingState;
+  setMode: (mode: EditingMode) => void;
+  setTool: (tool: EditingTool) => void;
+  hoverEntity: (ref?: EditingEntityRef) => void;
+  selectEntity: (ref?: EditingEntityRef) => void;
+  clearSelection: () => void;
+  beginTrajectoryRecording: (input: { agentId: string; startedAtMs?: number }) => void;
+  appendTrajectorySample: (sample: TrajectorySample) => void;
+  completeTrajectoryRecording: (options?: { label?: string }) => EditingHistoryEntry | undefined;
+  cancelTrajectoryRecording: () => void;
+  pushHistoryEntry: (entry: EditingHistoryEntry) => void;
+  undo: () => EditingHistoryEntry | undefined;
+  redo: () => EditingHistoryEntry | undefined;
+  reset: () => void;
 }
 
 interface ScenarioStoreValue {
@@ -44,6 +350,17 @@ interface ScenarioStoreValue {
   loadScenarioFromJson: (payload: { json: unknown; name?: string; source?: ScenarioSource }) => ScenarioResource;
   createBlankScenario: (name?: string) => ScenarioResource;
   updateScenario: (id: string, updater: (current: WaymoScenario) => WaymoScenario) => void;
+  updateAgentStartPose: (
+    scenarioId: string,
+    agentId: string,
+    next: { x?: number; y?: number; headingRadians?: number }
+  ) => void;
+  applyRecordedTrajectory: (
+    scenarioId: string,
+    agentId: string,
+    samples: TrajectorySample[]
+  ) => boolean;
+  editing: EditingStoreValue;
 }
 
 const ScenarioStoreContext = createContext<ScenarioStoreValue | undefined>(undefined);
@@ -64,6 +381,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   const [playbackSpeed, setPlaybackSpeedState] = useState(1);
   const [visibleTrajectoryIds, setVisibleTrajectoryIds] = useState<Set<string>>(new Set());
   const [showAgentLabels, setShowAgentLabels] = useState(false);
+  const [editingState, setEditingState] = useState<EditingState>(() => createInitialEditingState());
 
   const selectScenario = useCallback((id: string) => {
     setActiveScenarioId(id);
@@ -287,6 +605,292 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     setShowAgentLabels((prev) => !prev);
   }, []);
 
+  const resetEditing = useCallback(() => {
+    setEditingState(() => createInitialEditingState());
+  }, []);
+
+  const setEditingMode = useCallback((mode: EditingMode) => {
+    setEditingState((prev) => ({
+      ...prev,
+      mode
+    }));
+  }, []);
+
+  const setEditingTool = useCallback((tool: EditingTool) => {
+    setEditingState((prev) => ({
+      ...prev,
+      activeTool: tool
+    }));
+  }, []);
+
+  const hoverEntity = useCallback((ref?: EditingEntityRef) => {
+    setEditingState((prev) => ({
+      ...prev,
+      hoveredEntity: ref
+    }));
+  }, []);
+
+  const selectEntity = useCallback((ref?: EditingEntityRef) => {
+    setEditingState((prev) => ({
+      ...prev,
+      selectedEntity: ref
+    }));
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setEditingState((prev) => ({
+      ...prev,
+      selectedEntity: undefined
+    }));
+  }, []);
+
+  const beginTrajectoryRecording = useCallback((input: { agentId: string; startedAtMs?: number }) => {
+    const now = input.startedAtMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    setEditingState((prev) => ({
+      ...prev,
+      mode: 'trajectory',
+      activeTool: 'trajectory-record',
+      selectedEntity: { kind: 'agent', id: input.agentId },
+      isRecording: true,
+      trajectoryDraft: {
+        agentId: input.agentId,
+        startedAtMs: now,
+        lastSampledAtMs: now,
+        samples: []
+      }
+    }));
+  }, []);
+
+  const appendTrajectorySample = useCallback((sample: TrajectorySample) => {
+    setEditingState((prev) => {
+      if (!prev.isRecording || !prev.trajectoryDraft) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        trajectoryDraft: {
+          ...prev.trajectoryDraft,
+          lastSampledAtMs: sample.timestampMs,
+          samples: [...prev.trajectoryDraft.samples, sample]
+        }
+      };
+    });
+  }, []);
+
+  const completeTrajectoryRecording = useCallback((options?: { label?: string }) => {
+    let createdEntry: EditingHistoryEntry | undefined;
+    setEditingState((prev) => {
+      if (!prev.isRecording || !prev.trajectoryDraft) {
+        return prev;
+      }
+
+      const label = options?.label?.trim();
+      if (label) {
+        createdEntry = {
+          id: createResourceId('edit'),
+          label,
+          timestamp: Date.now()
+        };
+      }
+
+      return {
+        ...prev,
+        activeTool: prev.activeTool === 'trajectory-record' || prev.activeTool === 'trajectory-drive'
+          ? 'trajectory-edit'
+          : prev.activeTool,
+        isRecording: false,
+        trajectoryDraft: undefined,
+        history: createdEntry
+          ? {
+              undoStack: [...prev.history.undoStack, createdEntry],
+              redoStack: []
+            }
+          : prev.history
+      };
+    });
+
+    return createdEntry;
+  }, []);
+
+  const cancelTrajectoryRecording = useCallback(() => {
+    setEditingState((prev) => ({
+      ...prev,
+      isRecording: false,
+      trajectoryDraft: undefined,
+      activeTool: prev.activeTool === 'trajectory-record'
+        ? 'select'
+        : prev.activeTool === 'trajectory-drive'
+          ? 'trajectory-edit'
+          : prev.activeTool
+    }));
+  }, []);
+
+  const pushHistoryEntry = useCallback((entry: EditingHistoryEntry) => {
+    setEditingState((prev) => ({
+      ...prev,
+      history: {
+        undoStack: [...prev.history.undoStack, entry],
+        redoStack: []
+      }
+    }));
+  }, []);
+
+  const undo = useCallback(() => {
+    let entry: EditingHistoryEntry | undefined;
+    setEditingState((prev) => {
+      if (prev.history.undoStack.length === 0) {
+        return prev;
+      }
+
+      entry = prev.history.undoStack[prev.history.undoStack.length - 1];
+
+      return {
+        ...prev,
+        history: {
+          undoStack: prev.history.undoStack.slice(0, -1),
+          redoStack: entry ? [entry, ...prev.history.redoStack] : prev.history.redoStack
+        }
+      };
+    });
+
+    return entry;
+  }, []);
+
+  const redo = useCallback(() => {
+    let entry: EditingHistoryEntry | undefined;
+    setEditingState((prev) => {
+      if (prev.history.redoStack.length === 0) {
+        return prev;
+      }
+
+      entry = prev.history.redoStack[0];
+
+      return {
+        ...prev,
+        history: {
+          undoStack: entry ? [...prev.history.undoStack, entry] : prev.history.undoStack,
+          redoStack: prev.history.redoStack.slice(1)
+        }
+      };
+    });
+
+    return entry;
+  }, []);
+
+  const updateAgentStartPose = useCallback<ScenarioStoreValue['updateAgentStartPose']>((scenarioId, agentId, next) => {
+    setScenarios((prev) => prev.map((resource) => {
+      if (resource.id !== scenarioId) {
+        return resource;
+      }
+
+      const agent = resource.scenario.agents.find((item) => item.id === agentId);
+      if (!agent) {
+        return resource;
+      }
+
+      const anchorPoint = findFirstValidPoint(agent.trajectory) ?? agent.trajectory[0];
+      if (!anchorPoint) {
+        return resource;
+      }
+
+      const targetX = next.x ?? anchorPoint.x;
+      const targetY = next.y ?? anchorPoint.y;
+      const targetHeading = next.headingRadians ?? anchorPoint.heading ?? 0;
+      const deltaX = targetX - anchorPoint.x;
+      const deltaY = targetY - anchorPoint.y;
+      const deltaHeading = targetHeading - (anchorPoint.heading ?? 0);
+
+      const updatedAgent = shiftAgentTrajectory(agent, deltaX, deltaY, deltaHeading);
+      const nextAgents = resource.scenario.agents.map((item) => (item.id === agentId ? updatedAgent : item));
+      const nextScenario = withScenarioRebuild(resource.scenario, nextAgents);
+
+      return {
+        ...resource,
+        scenario: nextScenario
+      };
+    }));
+  }, []);
+
+  const applyRecordedTrajectory = useCallback<ScenarioStoreValue['applyRecordedTrajectory']>((scenarioId, agentId, samples) => {
+    if (samples.length === 0) {
+      return false;
+    }
+
+    let didUpdate = false;
+
+    setScenarios((prev) => prev.map((resource) => {
+      if (resource.id !== scenarioId) {
+        return resource;
+      }
+
+      const scenario = resource.scenario;
+      const agentIndex = scenario.agents.findIndex((agent) => agent.id === agentId);
+      if (agentIndex === -1) {
+        return resource;
+      }
+
+      const frameInterval = scenario.metadata.frameIntervalMicros ?? DEFAULT_FRAME_INTERVAL_MICROS;
+      const trajectory = samplesToTrajectoryPoints(samples, frameInterval);
+      if (trajectory.length === 0) {
+        return resource;
+      }
+
+      didUpdate = true;
+
+      const nextAgents = scenario.agents.map((agent) => (
+        agent.id === agentId
+          ? { ...agent, trajectory }
+          : agent
+      ));
+
+      const nextScenario = withScenarioRebuild(scenario, nextAgents);
+
+      return {
+        ...resource,
+        scenario: nextScenario
+      };
+    }));
+
+    return didUpdate;
+  }, []);
+
+  useEffect(() => {
+    resetEditing();
+  }, [activeScenarioId, resetEditing]);
+
+  const editingValue = useMemo<EditingStoreValue>(() => ({
+    state: editingState,
+    setMode: setEditingMode,
+    setTool: setEditingTool,
+    hoverEntity,
+    selectEntity,
+    clearSelection,
+    beginTrajectoryRecording,
+    appendTrajectorySample,
+    completeTrajectoryRecording,
+    cancelTrajectoryRecording,
+    pushHistoryEntry,
+    undo,
+    redo,
+    reset: resetEditing
+  }), [
+    editingState,
+    setEditingMode,
+    setEditingTool,
+    hoverEntity,
+    selectEntity,
+    clearSelection,
+    beginTrajectoryRecording,
+    appendTrajectorySample,
+    completeTrajectoryRecording,
+    cancelTrajectoryRecording,
+    pushHistoryEntry,
+    undo,
+    redo,
+    resetEditing
+  ]);
+
   const value = useMemo<ScenarioStoreValue>(() => ({
     scenarios,
     activeScenarioId,
@@ -309,7 +913,10 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     removeScenario,
     loadScenarioFromJson,
     createBlankScenario,
-    updateScenario
+    updateScenario,
+    updateAgentStartPose,
+    applyRecordedTrajectory,
+    editing: editingValue
   }), [
     scenarios,
     activeScenarioId,
@@ -332,7 +939,10 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     removeScenario,
     loadScenarioFromJson,
     createBlankScenario,
-    updateScenario
+    updateScenario,
+    updateAgentStartPose,
+    applyRecordedTrajectory,
+    editingValue
   ]);
 
   return <ScenarioStoreContext.Provider value={value}>{children}</ScenarioStoreContext.Provider>;

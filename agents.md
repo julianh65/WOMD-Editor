@@ -60,5 +60,23 @@ Deliver a visual, browser-based scenario authoring environment for the Waymo Ope
 - Scenario parser currently filters invalid/despawned points; editors must decide whether to expose these to users.
 - Space-bar restarts playback from frame 0 when at end; timeline slider remains source of truth for frame index.
 
+Other todos:
+1. In replay mode we to be able to use left and right arrow to jump in the timeline frames backwards or forwards (small)
+2. Add a delete all agents button (small)
+3. Make show agent labels on by default (small)
+4. Add editing icons to make it look nicer (small)
+5. Add an ability to toggle an agent to be marked as an expert or not (small)
+6. Add ability to set episode length manually
+7. Undo button
+8. When we record the path can the other cars continue moving / driving?
+9. Add some instructions / documentation
+10. In draw path / record mode also show a ghost of the previous path it took
+11. When we record path we should see the "line" / trail as we record it
+12. For the start position can we have something like in unity where it has an arrow up and right that we can drag to move their x and y coords? (small). Also a little rotation wheel to set their rotation
+
+Fixes
+1. When rotating an agent if it has a path we should probably keep that path locked so that the path rotates as well
+
 ---
 _Last updated: Editing sprint kickoff prep (focus on selection & trajectory tools)._ 
+
