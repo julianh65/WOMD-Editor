@@ -13,7 +13,8 @@ function ScenarioTimeline() {
     play,
     pause,
     playbackSpeed,
-    setPlaybackSpeed
+    setPlaybackSpeed,
+    editing
   } = useScenarioStore();
 
   const frameCount = useMemo(() => activeScenario?.metadata.frameCount ?? 0, [activeScenario?.metadata.frameCount]);
@@ -35,12 +36,14 @@ function ScenarioTimeline() {
     }
   };
 
-  useEffect(() => {
-    const handleKeydown = (event: KeyboardEvent) => {
-      if (event.code !== 'Space') {
-        return;
-      }
+  const driveInputsLocked = editing.state.isRecording || editing.state.activeTool === 'trajectory-drive';
 
+  useEffect(() => {
+    if (driveInputsLocked) {
+      return;
+    }
+
+    const handleKeydown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
         return;
@@ -50,22 +53,51 @@ function ScenarioTimeline() {
         return;
       }
 
-      if (event.repeat) {
+      if (event.code === 'Space') {
+        if (event.repeat) {
+          event.preventDefault();
+          return;
+        }
+
         event.preventDefault();
+        if (isPlaying) {
+          pause();
+        } else {
+          play();
+        }
+        return;
+      }
+
+      if (event.code !== 'ArrowLeft' && event.code !== 'ArrowRight') {
         return;
       }
 
       event.preventDefault();
+      const delta = event.code === 'ArrowLeft' ? -1 : 1;
+      const nextIndex = Math.min(Math.max(activeFrameIndex + delta, 0), frameCount - 1);
+      if (nextIndex === activeFrameIndex) {
+        return;
+      }
+
       if (isPlaying) {
         pause();
-      } else {
-        play();
       }
+
+      setActiveFrameIndex(nextIndex);
     };
 
     window.addEventListener('keydown', handleKeydown, { passive: false });
     return () => window.removeEventListener('keydown', handleKeydown);
-  }, [activeScenario, frameCount, isPlaying, pause, play]);
+  }, [
+    activeFrameIndex,
+    activeScenario,
+    frameCount,
+    isPlaying,
+    pause,
+    play,
+    setActiveFrameIndex,
+    driveInputsLocked
+  ]);
 
   if (!activeScenario || frameCount === 0) {
     return (

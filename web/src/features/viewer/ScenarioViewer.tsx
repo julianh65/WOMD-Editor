@@ -28,11 +28,13 @@ interface CanvasDims {
 
 type TrajectoryDrawOptions = {
   highlight?: 'selected' | 'hovered';
+  variant?: 'ghost';
 };
 
 type AgentHighlightState = {
   selected?: boolean;
   hovered?: boolean;
+  driving?: boolean;
 };
 
 interface BaseTransformContext {
@@ -44,15 +46,16 @@ interface BaseTransformContext {
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
 const DEFAULT_FRAME_INTERVAL_MICROS = 100_000;
+const DEBUG_DRIVE = true; // temporary debug overlay
 
-const DRIVE_CONFIG = {
-  maxSpeed: 14, // ~50 km/h
-  maxReverseSpeed: 4,
-  acceleration: 6,
-  reverseAcceleration: 3,
-  brakeDeceleration: 10,
-  drag: 1.8,
-  steerRate: 2.4 // radians per second at full speed
+const DRIVE_SETTINGS_DEFAULT: DriveSettings = {
+  maxSpeed: 34,
+  maxReverseSpeed: 10,
+  acceleration: 15,
+  reverseAcceleration: 9,
+  brakeDeceleration: 16,
+  drag: 0.85,
+  steerRate: 5.2
 };
 
 interface DriveSession {
@@ -74,6 +77,16 @@ interface DriveControlsState {
 }
 
 type DriveModeStopper = (commit: boolean) => void;
+
+interface DriveSettings {
+  maxSpeed: number;
+  maxReverseSpeed: number;
+  acceleration: number;
+  reverseAcceleration: number;
+  brakeDeceleration: number;
+  drag: number;
+  steerRate: number;
+}
 
 const TYPE_COLOURS: Record<string, string> = {
   VEHICLE: '#38bdf8',
@@ -105,6 +118,105 @@ const ROAD_STYLES: Record<string, { stroke: string; width: number; dash?: number
   CROSSWALK: { stroke: 'rgba(248, 113, 113, 0.5)', width: 1.2, dash: [4, 6] },
   OTHER: { stroke: 'rgba(148, 163, 184, 0.35)', width: 1.0 }
 };
+
+const TOOLBAR_ICONS = {
+  inspect: (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="11" cy="11" r="6" />
+      <line x1="16.5" y1="16.5" x2="21" y2="21" />
+    </svg>
+  ),
+  trajectory: (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 19c2.5-6 7.5-9 11-7" />
+      <circle cx="6" cy="6" r="2" />
+      <circle cx="18" cy="18" r="2" />
+    </svg>
+  ),
+  road: (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M8 3h2l4 18h-2" />
+      <path d="M4 21l4-18" />
+      <path d="M12 3h4l-4 18h4" />
+    </svg>
+  ),
+  adjust: (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 20 17 7" />
+      <path d="M14 4l6 6" />
+      <path d="M3 10l7 7" />
+    </svg>
+  ),
+  record: (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="5" fill="currentColor" />
+      <circle cx="12" cy="12" r="8" />
+    </svg>
+  ),
+  drive: (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="8" />
+      <path d="M6.5 9h11" />
+      <path d="M9 16h6" />
+      <circle cx="9" cy="13.5" r="1.2" />
+      <circle cx="15" cy="13.5" r="1.2" />
+    </svg>
+  )
+} as const;
 
 function computeTransform(bounds: ScenarioBounds | undefined, width = 1, height = 1): CanvasTransform {
   const padding = 40;
@@ -239,18 +351,26 @@ function drawTrajectory(
 
   ctx.save();
   const highlight = options.highlight;
-  const baseColour = getTrajectoryColour(agent);
-  ctx.strokeStyle = highlight === 'selected'
-    ? 'rgba(250, 204, 21, 0.95)'
-    : highlight === 'hovered'
-      ? 'rgba(34, 211, 238, 0.9)'
-      : baseColour;
-  ctx.lineWidth = highlight === 'selected'
-    ? 3.4
-    : highlight === 'hovered'
-      ? 2.8
-      : 2.25;
-  ctx.setLineDash(highlight === 'hovered' ? [10, 12] : []);
+  const isGhost = options.variant === 'ghost';
+  if (isGhost) {
+    const dash = 10;
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.45)';
+    ctx.lineWidth = 2.1;
+    ctx.setLineDash([dash, dash]);
+  } else {
+    const baseColour = getTrajectoryColour(agent);
+    ctx.strokeStyle = highlight === 'selected'
+      ? 'rgba(250, 204, 21, 0.95)'
+      : highlight === 'hovered'
+        ? 'rgba(34, 211, 238, 0.9)'
+        : baseColour;
+    ctx.lineWidth = highlight === 'selected'
+      ? 3.4
+      : highlight === 'hovered'
+        ? 2.8
+        : 2.25;
+    ctx.setLineDash(highlight === 'hovered' ? [10, 12] : []);
+  }
 
   let hasStarted = false;
   let lastPoint: { x: number; y: number } | null = null;
@@ -425,12 +545,17 @@ function drawAgent(
 
   const colours = getAgentColours(agentState, agentInfo);
   const labelText = showLabel ? agentInfo?.displayName ?? agentState.id : undefined;
+  const isDriving = Boolean(highlight?.driving);
+  const fillColour = isDriving ? '#f97316' : colours.fill;
+  const strokeColour = isDriving ? '#fb923c' : colours.stroke;
 
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(-(agentState.heading ?? 0));
-  ctx.fillStyle = colours.fill;
-  ctx.strokeStyle = colours.stroke;
+  const headingValue = agentState.heading ?? 0;
+  const rotation = -headingValue;
+  ctx.rotate(rotation);
+  ctx.fillStyle = fillColour;
+  ctx.strokeStyle = strokeColour;
   ctx.lineWidth = 1.5;
 
   const halfLength = lengthPx / 2;
@@ -453,7 +578,10 @@ function drawAgent(
   if (highlight?.selected || highlight?.hovered) {
     const isSelected = Boolean(highlight?.selected);
     ctx.lineWidth = Math.max(isSelected ? 3.2 : 2.2, (isSelected ? 3.2 : 2.2) / camera.zoom);
-    ctx.strokeStyle = isSelected ? 'rgba(250, 204, 21, 0.92)' : 'rgba(94, 234, 212, 0.9)';
+    const selectedStroke = agentInfo?.isExpert
+      ? 'rgba(14, 165, 233, 0.95)'
+      : 'rgba(250, 204, 21, 0.92)';
+    ctx.strokeStyle = isSelected ? selectedStroke : 'rgba(94, 234, 212, 0.9)';
     ctx.setLineDash(isSelected ? [] : [12 / camera.zoom, 12 / camera.zoom]);
     ctx.strokeRect(-halfLength, -halfWidth, lengthPx, widthPx);
   }
@@ -496,6 +624,8 @@ function ScenarioViewer() {
     visibleTrajectoryIds,
     showAgentLabels,
     pause,
+    play,
+    isPlaying,
     setActiveFrameIndex,
     applyRecordedTrajectory,
     editing
@@ -543,6 +673,25 @@ function ScenarioViewer() {
     brake: false
   });
   const stopDriveModeRef = useRef<DriveModeStopper | null>(null);
+  const [driveSettings, setDriveSettings] = useState<DriveSettings>(DRIVE_SETTINGS_DEFAULT);
+  const driveSettingsRef = useRef<DriveSettings>(driveSettings);
+  const wasPlayingRef = useRef(false);
+  const [debugKeys, setDebugKeys] = useState<Record<string, boolean>>({});
+  const [debugDrive, setDebugDrive] = useState<{
+    throttle: number;
+    steer: number;
+    speed: number;
+    heading: number;
+    forward: boolean;
+    backward: boolean;
+    left: boolean;
+    right: boolean;
+    brake: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    driveSettingsRef.current = driveSettings;
+  }, [driveSettings]);
   const editingMode = editingState.mode;
   const activeTool = editingState.activeTool;
   const isRecording = editingState.isRecording;
@@ -555,6 +704,7 @@ function ScenarioViewer() {
   const isDriveToolSelected = activeTool === 'trajectory-drive';
   const isPointerRecordActive = isPointerRecordTool && !isDriveActive;
   const isPointerRecording = isRecording && !isDriveActive;
+  const trajectoryDraft = editingState.trajectoryDraft;
 
   const summary = useMemo(() => {
     if (!activeScenario) {
@@ -600,7 +750,7 @@ function ScenarioViewer() {
     return activeScenario.agents.filter((agent) => ids.has(agent.id));
   }, [activeScenario, visibleTrajectoryIds, selectedAgentId, hoveredAgentId]);
 
-  const updateDriveCamera = useCallback((position: { x: number; y: number }, heading: number) => {
+  const updateDriveCamera = useCallback((position: { x: number; y: number }) => {
     const baseContext = baseTransformRef.current;
     if (!baseContext) {
       return;
@@ -612,24 +762,19 @@ function ScenarioViewer() {
     }
 
     const dims: CanvasDims = { width, height };
-    const rotation = Math.PI / 2 - heading;
     const centerX = width / 2;
     const centerY = height / 2;
     const anchor = worldToAnchor(position, baseContext.transform, dims);
     const dx = anchor.x - centerX;
     const dy = anchor.y - centerY;
-    const cos = Math.cos(rotation);
-    const sin = Math.sin(rotation);
-    const rotatedX = dx * cos - dy * sin;
-    const rotatedY = dx * sin + dy * cos;
 
     setCamera((prev) => {
       const zoom = prev.zoom;
       return {
         zoom,
-        panX: centerX - (rotatedX * zoom + centerX),
-        panY: centerY - (rotatedY * zoom + centerY),
-        rotation
+        panX: -(dx * zoom),
+        panY: -(dy * zoom),
+        rotation: 0
       };
     });
   }, [setCamera]);
@@ -749,26 +894,31 @@ function ScenarioViewer() {
     session.lastTimestampMs = timestamp;
 
     const controls = driveControlsRef.current;
+    const settings = driveSettingsRef.current;
     const throttleInput = (controls.forward ? 1 : 0) + (controls.backward ? -1 : 0);
 
     if (controls.brake) {
       if (session.speed > 0) {
-        session.speed = Math.max(0, session.speed - DRIVE_CONFIG.brakeDeceleration * dt);
+        session.speed = Math.max(0, session.speed - settings.brakeDeceleration * dt);
       } else if (session.speed < 0) {
-        session.speed = Math.min(0, session.speed + DRIVE_CONFIG.brakeDeceleration * dt);
+        session.speed = Math.min(0, session.speed + settings.brakeDeceleration * dt);
       }
     } else if (throttleInput > 0) {
+      const speedAbs = Math.abs(session.speed);
+      const launchBoost = 1 + Math.max(0, 4 - speedAbs) * 0.25;
       session.speed = Math.min(
-        DRIVE_CONFIG.maxSpeed,
-        session.speed + DRIVE_CONFIG.acceleration * throttleInput * dt
+        settings.maxSpeed,
+        session.speed + settings.acceleration * throttleInput * launchBoost * dt
       );
     } else if (throttleInput < 0) {
+      const speedAbs = Math.abs(session.speed);
+      const reverseBoost = 1 + Math.max(0, 3 - speedAbs) * 0.2;
       session.speed = Math.max(
-        -DRIVE_CONFIG.maxReverseSpeed,
-        session.speed + DRIVE_CONFIG.reverseAcceleration * throttleInput * dt
+        -settings.maxReverseSpeed,
+        session.speed + settings.reverseAcceleration * throttleInput * reverseBoost * dt
       );
     } else {
-      const drag = Math.min(DRIVE_CONFIG.drag * dt, 1);
+      const drag = Math.min(settings.drag * dt, 1);
       session.speed *= Math.max(0, 1 - drag);
       if (Math.abs(session.speed) < 0.02) {
         session.speed = 0;
@@ -776,16 +926,36 @@ function ScenarioViewer() {
     }
 
     const steerInput = (controls.right ? 1 : 0) - (controls.left ? 1 : 0);
-    if (steerInput !== 0 && Math.abs(session.speed) > 0.1) {
-      const speedRatio = Math.min(Math.abs(session.speed) / DRIVE_CONFIG.maxSpeed, 1);
-      const direction = session.speed >= 0 ? 1 : -1;
-      session.heading += steerInput * DRIVE_CONFIG.steerRate * speedRatio * dt * direction;
+    if (steerInput !== 0) {
+      const speedAbs = Math.abs(session.speed);
+      const speedRatio = settings.maxSpeed > 0 ? Math.min(speedAbs / settings.maxSpeed, 1) : 0;
+      const hasThrottle = Math.abs(throttleInput) > 0;
+      const hasBrake = controls.brake;
+      // Ensure strong steering while holding throttle/brake so turning + accelerating is always responsive
+      const baseMin = hasThrottle ? 0.75 : (hasBrake ? 0.5 : 0);
+      const effectiveRatio = Math.max(speedRatio, baseMin);
+      const steerDelta = -steerInput * settings.steerRate * effectiveRatio * dt;
+      session.heading += steerDelta;
     }
 
     const distance = session.speed * dt;
     if (distance !== 0) {
       session.position.x += Math.cos(session.heading) * distance;
       session.position.y += Math.sin(session.heading) * distance;
+    }
+
+    if (DEBUG_DRIVE) {
+      setDebugDrive({
+        throttle: throttleInput,
+        steer: steerInput,
+        speed: session.speed,
+        heading: session.heading,
+        forward: controls.forward,
+        backward: controls.backward,
+        left: controls.left,
+        right: controls.right,
+        brake: controls.brake
+      });
     }
 
     const frameIntervalMicros = activeScenario?.metadata.frameIntervalMicros ?? DEFAULT_FRAME_INTERVAL_MICROS;
@@ -810,7 +980,7 @@ function ScenarioViewer() {
       setActiveFrameIndex(targetFrame);
     }
 
-    updateDriveCamera(session.position, session.heading);
+    updateDriveCamera(session.position);
 
     if (driveSessionRef.current) {
       driveAnimationRef.current = requestAnimationFrame(runDriveLoop);
@@ -916,11 +1086,11 @@ function ScenarioViewer() {
 
     pause();
     setEditingMode('trajectory');
-    setEditingTool('trajectory-drive');
     selectEntity({ kind: 'agent', id: selectedAgentId });
     setActiveFrameIndex(0);
 
     beginTrajectoryRecording({ agentId: selectedAgentId, startedAtMs: startTimestamp });
+    setEditingTool('trajectory-drive');
     appendTrajectorySample({ x: anchorPoint.x, y: anchorPoint.y, timestampMs: startTimestamp });
 
     driveSessionRef.current = {
@@ -942,11 +1112,14 @@ function ScenarioViewer() {
     };
 
     setIsDriveActive(true);
-    updateDriveCamera({ x: anchorPoint.x, y: anchorPoint.y }, anchorPoint.heading ?? 0);
-
-    setEditingTool('trajectory-drive');
-
+    updateDriveCamera({ x: anchorPoint.x, y: anchorPoint.y });
     driveAnimationRef.current = requestAnimationFrame(runDriveLoop);
+    // Give keyboard focus to the canvas for reliable multi-key input
+    setTimeout(() => {
+      try {
+        canvasRef.current?.focus?.();
+      } catch {}
+    }, 0);
   }, [
     activeScenario,
     agentById,
@@ -971,6 +1144,23 @@ function ScenarioViewer() {
     }
   }, [isDriveActive, startDriveMode, stopDriveMode]);
 
+  const handleDriveSettingChange = useCallback((key: keyof DriveSettings, value: number) => {
+    setDriveSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      if (key === 'maxSpeed') {
+        next.maxReverseSpeed = Math.max(3, value * 0.3);
+      }
+      if (key === 'acceleration') {
+        next.reverseAcceleration = Math.max(2, value * 0.6);
+        next.brakeDeceleration = Math.max(value, prev.brakeDeceleration);
+      }
+      if (key === 'steerRate') {
+        next.steerRate = Math.max(0.5, value);
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (!isDriveActive) {
       return undefined;
@@ -982,28 +1172,55 @@ function ScenarioViewer() {
         return;
       }
 
-      switch (event.key) {
+      switch (event.code) {
         case 'ArrowUp':
+        case 'KeyW':
           driveControlsRef.current.forward = true;
-          driveControlsRef.current.backward = false;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => ({ ...prev, [event.code]: true }));
           break;
         case 'ArrowDown':
+        case 'KeyS':
           driveControlsRef.current.backward = true;
-          driveControlsRef.current.forward = false;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => ({ ...prev, [event.code]: true }));
           break;
         case 'ArrowLeft':
+        case 'KeyA':
           driveControlsRef.current.left = true;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => ({ ...prev, [event.code]: true }));
           break;
         case 'ArrowRight':
+        case 'KeyD':
           driveControlsRef.current.right = true;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => ({ ...prev, [event.code]: true }));
           break;
-        case ' ': // Spacebar
+        case 'Space':
           driveControlsRef.current.brake = true;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => ({ ...prev, [event.code]: true }));
           break;
         case 'Escape':
           event.preventDefault();
@@ -1019,38 +1236,67 @@ function ScenarioViewer() {
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
-      switch (event.key) {
+      switch (event.code) {
         case 'ArrowUp':
+        case 'KeyW':
           driveControlsRef.current.forward = false;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => { const next = { ...prev }; delete next[event.code]; return next; });
           break;
         case 'ArrowDown':
+        case 'KeyS':
           driveControlsRef.current.backward = false;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => { const next = { ...prev }; delete next[event.code]; return next; });
           break;
         case 'ArrowLeft':
+        case 'KeyA':
           driveControlsRef.current.left = false;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => { const next = { ...prev }; delete next[event.code]; return next; });
           break;
         case 'ArrowRight':
+        case 'KeyD':
           driveControlsRef.current.right = false;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => { const next = { ...prev }; delete next[event.code]; return next; });
           break;
-        case ' ': // Spacebar
+        case 'Space':
           driveControlsRef.current.brake = false;
           event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (DEBUG_DRIVE) setDebugKeys((prev) => { const next = { ...prev }; delete next[event.code]; return next; });
           break;
         default:
           break;
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('keydown', handleKeyDown, { passive: false, capture: true });
+    window.addEventListener('keyup', handleKeyUp, { passive: false, capture: true });
 
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('keydown', handleKeyDown, { capture: true } as any);
+      window.removeEventListener('keyup', handleKeyUp, { capture: true } as any);
       driveControlsRef.current = {
         forward: false,
         backward: false,
@@ -1207,19 +1453,64 @@ function ScenarioViewer() {
 
     drawRoadEdges(ctx, activeScenario.roadEdges, baseTransform, camera, dims);
 
+    const drivingAgentId = driveSessionRef.current?.agentId;
+
+    const recordingAgentId = isPointerRecording ? trajectoryDraft?.agentId : undefined;
     trajectoryAgents.forEach((agent) => {
-      const highlight = agent.id === selectedAgentId
+      const isDrivingAgent = isDriveActive && drivingAgentId === agent.id;
+      const isRecordingAgent = recordingAgentId === agent.id;
+      const highlight = isDrivingAgent
         ? 'selected'
-        : agent.id === hoveredAgentId
-          ? 'hovered'
-          : undefined;
-      drawTrajectory(ctx, agent, baseTransform, camera, dims, { highlight });
+        : agent.id === selectedAgentId
+          ? 'selected'
+          : agent.id === hoveredAgentId
+            ? 'hovered'
+            : undefined;
+
+      if (isRecordingAgent) {
+        drawTrajectory(ctx, agent, baseTransform, camera, dims, { variant: 'ghost' });
+      } else {
+        drawTrajectory(ctx, agent, baseTransform, camera, dims, { highlight });
+      }
     });
+
+    if (trajectoryDraft && trajectoryDraft.samples.length > 0) {
+      ctx.save();
+      const dashLength = 8 / Math.max(camera.zoom, 0.0001);
+      ctx.lineWidth = Math.max(2.4, 2.4 / camera.zoom);
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.85)';
+      ctx.setLineDash([dashLength, dashLength]);
+
+      const first = worldToCanvas(trajectoryDraft.samples[0], baseTransform, camera, dims);
+      ctx.beginPath();
+      ctx.moveTo(first.x, first.y);
+      for (let i = 1; i < trajectoryDraft.samples.length; i += 1) {
+        const point = worldToCanvas(trajectoryDraft.samples[i], baseTransform, camera, dims);
+        ctx.lineTo(point.x, point.y);
+      }
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      const tipPoint = worldToCanvas(
+        trajectoryDraft.samples[trajectoryDraft.samples.length - 1],
+        baseTransform,
+        camera,
+        dims
+      );
+      const tipRadius = Math.max(4, 6 / camera.zoom);
+      ctx.beginPath();
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.9)';
+      ctx.arc(tipPoint.x, tipPoint.y, tipRadius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
 
     activeFrame.agents.forEach((agentState) => {
       const agentInfo = agentById.get(agentState.id);
+      const isDrivingAgent = isDriveActive && drivingAgentId === agentState.id;
       let renderState = agentState;
-      if (isDriveActive && driveSessionRef.current?.agentId === agentState.id) {
+      if (isDrivingAgent) {
         const session = driveSessionRef.current;
         renderState = {
           ...agentState,
@@ -1230,8 +1521,9 @@ function ScenarioViewer() {
         };
       }
       const highlight = {
-        selected: renderState.id === selectedAgentId,
-        hovered: renderState.id === hoveredAgentId && renderState.id !== selectedAgentId
+        selected: renderState.id === selectedAgentId || isDrivingAgent,
+        hovered: renderState.id === hoveredAgentId && renderState.id !== selectedAgentId,
+        driving: isDrivingAgent
       };
       drawAgent(ctx, renderState, baseTransform, camera, dims, agentInfo, showAgentLabels, highlight);
     });
@@ -1245,7 +1537,8 @@ function ScenarioViewer() {
     selectedAgentId,
     hoveredAgentId,
     showAgentLabels,
-    isDriveActive
+    isDriveActive,
+    trajectoryDraft
   ]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -1295,8 +1588,10 @@ function ScenarioViewer() {
         return;
       }
 
-      pause();
-      setActiveFrameIndex(0);
+      wasPlayingRef.current = isPlaying;
+      if (!isPlaying) {
+        play();
+      }
 
       const rect = canvas.getBoundingClientRect();
       const canvasX = event.clientX - rect.left;
@@ -1321,8 +1616,8 @@ function ScenarioViewer() {
     getEntityAtCanvasXY,
     applySelection,
     activeScenarioId,
-    pause,
-    setActiveFrameIndex,
+    isPlaying,
+    play,
     camera,
     beginTrajectoryRecording,
     appendTrajectorySample,
@@ -1458,7 +1753,6 @@ function ScenarioViewer() {
             const agentInfo = agentById.get(draft.agentId);
             const label = `Recorded path for ${agentInfo?.displayName ?? draft.agentId}`;
             completeTrajectoryRecording({ label });
-            setActiveFrameIndex(0);
           } else {
             cancelTrajectoryRecording();
           }
@@ -1468,6 +1762,11 @@ function ScenarioViewer() {
       } else {
         cancelTrajectoryRecording();
       }
+
+      if (!wasPlayingRef.current) {
+        pause();
+      }
+      wasPlayingRef.current = false;
 
       releasePointerCapture(event.pointerId);
       resetDragState();
@@ -1497,12 +1796,13 @@ function ScenarioViewer() {
     applyRecordedTrajectory,
     agentById,
     completeTrajectoryRecording,
-    setActiveFrameIndex,
+    pause,
     cancelTrajectoryRecording,
     camera,
     getEntityAtCanvasXY,
     applySelection,
     hoverEntity,
+    wasPlayingRef,
     releasePointerCapture,
     resetDragState
   ]);
@@ -1512,12 +1812,16 @@ function ScenarioViewer() {
     if (state.pointerId === event.pointerId) {
       if (state.mode === 'record' && editingState.isRecording) {
         cancelTrajectoryRecording();
+        if (!wasPlayingRef.current) {
+          pause();
+        }
+        wasPlayingRef.current = false;
       }
       releasePointerCapture(event.pointerId);
       resetDragState();
     }
     hoverEntity(undefined);
-  }, [editingState.isRecording, cancelTrajectoryRecording, releasePointerCapture, resetDragState, hoverEntity]);
+  }, [editingState.isRecording, cancelTrajectoryRecording, pause, releasePointerCapture, resetDragState, hoverEntity]);
 
   const handlePointerCancel = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
     const state = dragStateRef.current;
@@ -1599,6 +1903,81 @@ function ScenarioViewer() {
         <canvas
           ref={canvasRef}
           className="viewer__canvas"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (!isDriveActive) return;
+            const code = (e as unknown as KeyboardEvent).code || e.key;
+            switch (code) {
+              case 'ArrowUp':
+              case 'KeyW':
+                driveControlsRef.current.forward = true;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              case 'ArrowDown':
+              case 'KeyS':
+                driveControlsRef.current.backward = true;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              case 'ArrowLeft':
+              case 'KeyA':
+                driveControlsRef.current.left = true;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              case 'ArrowRight':
+              case 'KeyD':
+                driveControlsRef.current.right = true;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              case 'Space':
+                driveControlsRef.current.brake = true;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              default:
+                break;
+            }
+          }}
+          onKeyUp={(e) => {
+            if (!isDriveActive) return;
+            const code = (e as unknown as KeyboardEvent).code || e.key;
+            switch (code) {
+              case 'ArrowUp':
+              case 'KeyW':
+                driveControlsRef.current.forward = false;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              case 'ArrowDown':
+              case 'KeyS':
+                driveControlsRef.current.backward = false;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              case 'ArrowLeft':
+              case 'KeyA':
+                driveControlsRef.current.left = false;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              case 'ArrowRight':
+              case 'KeyD':
+                driveControlsRef.current.right = false;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              case 'Space':
+                driveControlsRef.current.brake = false;
+                e.preventDefault();
+                e.stopPropagation();
+                break;
+              default:
+                break;
+            }
+          }}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -1607,32 +1986,63 @@ function ScenarioViewer() {
           onWheel={handleWheel}
         />
         <div className="viewer__toolbar">
+          {DEBUG_DRIVE && isDriveActive && (
+            <div
+              style={{
+                position: 'absolute',
+                left: 8,
+                bottom: 8,
+                background: 'rgba(15,23,42,0.85)',
+                color: 'white',
+                fontSize: 12,
+                lineHeight: 1.35,
+                padding: '8px 10px',
+                borderRadius: 6,
+                boxShadow: '0 2px 6px rgba(0,0,0,0.35)',
+                pointerEvents: 'none',
+                maxWidth: 320
+              }}
+            >
+              <div><strong>Drive Debug</strong></div>
+              <div>Keys: {Object.keys(debugKeys).filter((k) => debugKeys[k]).join(', ') || '—'}</div>
+              {debugDrive && (
+                <div>
+                  <div>Controls: F {String(debugDrive.forward)} | B {String(debugDrive.backward)} | L {String(debugDrive.left)} | R {String(debugDrive.right)} | Brake {String(debugDrive.brake)}</div>
+                  <div>Throttle {debugDrive.throttle.toFixed(2)} | Steer {debugDrive.steer.toFixed(2)}</div>
+                  <div>Speed {debugDrive.speed.toFixed(2)} m/s | Heading {debugDrive.heading.toFixed(2)} rad</div>
+                </div>
+              )}
+            </div>
+          )}
           <div className="viewer__toolbar-row">
             <span className="viewer__toolbar-label">Mode</span>
             <div className="viewer__toolbar-buttons">
               <button
                 type="button"
-                className="button button--secondary"
+                className="button button--secondary viewer__toolbar-button"
                 aria-pressed={editingMode === 'inspect'}
                 onClick={() => handleModeChange('inspect')}
               >
-                Inspect
+                <span className="viewer__toolbar-button-icon" aria-hidden="true">{TOOLBAR_ICONS.inspect}</span>
+                <span>Inspect</span>
               </button>
               <button
                 type="button"
-                className="button button--secondary"
+                className="button button--secondary viewer__toolbar-button"
                 aria-pressed={editingMode === 'trajectory'}
                 onClick={() => handleModeChange('trajectory')}
               >
-                Trajectory
+                <span className="viewer__toolbar-button-icon" aria-hidden="true">{TOOLBAR_ICONS.trajectory}</span>
+                <span>Trajectory</span>
               </button>
               <button
                 type="button"
-                className="button button--secondary"
+                className="button button--secondary viewer__toolbar-button"
                 aria-pressed={editingMode === 'road'}
                 onClick={() => handleModeChange('road')}
               >
-                Road
+                <span className="viewer__toolbar-button-icon" aria-hidden="true">{TOOLBAR_ICONS.road}</span>
+                <span>Road</span>
               </button>
             </div>
           </div>
@@ -1643,30 +2053,74 @@ function ScenarioViewer() {
               <div className="viewer__toolbar-buttons">
                 <button
                   type="button"
-                  className="button button--secondary"
+                  className="button button--secondary viewer__toolbar-button"
                   aria-pressed={activeTool === 'trajectory-edit'}
                   onClick={() => handleToolChange('trajectory-edit')}
                 >
-                  Adjust Path
+                  <span className="viewer__toolbar-button-icon" aria-hidden="true">{TOOLBAR_ICONS.adjust}</span>
+                  <span>Adjust Path</span>
                 </button>
                 <button
                   type="button"
-                  className="button button--secondary"
+                  className="button button--secondary viewer__toolbar-button"
                   aria-pressed={isPointerRecordActive || isPointerRecording}
                   onClick={() => handleToolChange('trajectory-record')}
                   disabled={isDriveActive}
                 >
-                  {isPointerRecording ? 'Recording…' : 'Record Path'}
+                  <span className="viewer__toolbar-button-icon" aria-hidden="true">{TOOLBAR_ICONS.record}</span>
+                  <span>{isPointerRecording ? 'Recording…' : 'Record Path'}</span>
                 </button>
                 <button
                   type="button"
-                  className="button button--secondary"
+                  className="button button--secondary viewer__toolbar-button"
                   aria-pressed={isDriveActive}
                   onClick={handleDriveToggle}
                   disabled={!selectedAgentId}
                 >
-                  {isDriveActive ? 'Stop Drive' : 'Drive Agent'}
+                  <span className="viewer__toolbar-button-icon" aria-hidden="true">{TOOLBAR_ICONS.drive}</span>
+                  <span>{isDriveActive ? 'Stop Drive' : 'Drive Agent'}</span>
                 </button>
+              </div>
+            </div>
+          )}
+
+          {isTrajectoryMode && (
+            <div className="viewer__toolbar-row viewer__toolbar-row--settings">
+              <span className="viewer__toolbar-label">Drive Tune</span>
+              <div className="viewer__toolbar-settings">
+                <label>
+                  <span>Max Speed {Math.round(driveSettings.maxSpeed * 3.6)} km/h</span>
+                  <input
+                    type="range"
+                    min="8"
+                    max="40"
+                    step="1"
+                    value={driveSettings.maxSpeed}
+                    onChange={(event) => handleDriveSettingChange('maxSpeed', Number(event.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>Acceleration {driveSettings.acceleration.toFixed(1)} m/s²</span>
+                  <input
+                    type="range"
+                    min="3"
+                    max="20"
+                    step="0.5"
+                    value={driveSettings.acceleration}
+                    onChange={(event) => handleDriveSettingChange('acceleration', Number(event.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>Steer Sensitivity {driveSettings.steerRate.toFixed(1)}</span>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="6"
+                    step="0.1"
+                    value={driveSettings.steerRate}
+                    onChange={(event) => handleDriveSettingChange('steerRate', Number(event.target.value))}
+                  />
+                </label>
               </div>
             </div>
           )}

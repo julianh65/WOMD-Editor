@@ -171,12 +171,13 @@ function withScenarioRebuild(base: WaymoScenario, nextAgents: ScenarioAgent[]): 
   const frames = buildFramesFromAgents(nextAgents, frameInterval);
   const frameCount = frames.length;
   const durationSeconds = frameCount > 0 ? ((frameCount - 1) * frameInterval) / 1_000_000 : 0;
+  const nextBounds = computeBoundsFromAgents(nextAgents) ?? base.bounds;
 
   return {
     ...base,
     agents: nextAgents,
     frames,
-    bounds: computeBoundsFromAgents(nextAgents),
+    bounds: nextBounds,
     metadata: {
       ...base.metadata,
       frameCount,
@@ -189,19 +190,43 @@ function findFirstValidPoint(points: TrajectoryPoint[]): TrajectoryPoint | undef
   return points.find((point) => point.valid !== false);
 }
 
-function shiftAgentTrajectory(
+function transformAgentTrajectory(
   agent: ScenarioAgent,
-  deltaX: number,
-  deltaY: number,
+  anchorPoint: TrajectoryPoint,
+  targetAnchorX: number,
+  targetAnchorY: number,
   deltaHeadingRad: number
 ): ScenarioAgent {
+  const cos = Math.cos(deltaHeadingRad);
+  const sin = Math.sin(deltaHeadingRad);
+
   const updatedTrajectory = agent.trajectory.map((point) => {
+    const relX = point.x - anchorPoint.x;
+    const relY = point.y - anchorPoint.y;
+    const rotatedX = relX * cos - relY * sin;
+    const rotatedY = relX * sin + relY * cos;
+
+    const nextX = targetAnchorX + rotatedX;
+    const nextY = targetAnchorY + rotatedY;
+
     const nextHeading = typeof point.heading === 'number' ? point.heading + deltaHeadingRad : point.heading;
+
+    let nextVelocityX = point.velocityX;
+    let nextVelocityY = point.velocityY;
+    if (typeof point.velocityX === 'number' || typeof point.velocityY === 'number') {
+      const vx = point.velocityX ?? 0;
+      const vy = point.velocityY ?? 0;
+      nextVelocityX = vx * cos - vy * sin;
+      nextVelocityY = vx * sin + vy * cos;
+    }
+
     return {
       ...point,
-      x: point.x + deltaX,
-      y: point.y + deltaY,
-      heading: nextHeading
+      x: nextX,
+      y: nextY,
+      heading: nextHeading,
+      velocityX: nextVelocityX,
+      velocityY: nextVelocityY
     };
   });
 
@@ -296,7 +321,53 @@ function samplesToTrajectoryPoints(samples: TrajectorySample[], frameIntervalMic
     lastFrameTimeMs = targetMs;
   }
 
+  smoothTrajectoryHeadings(trajectory);
+
   return trajectory;
+}
+
+function smoothTrajectoryHeadings(points: TrajectoryPoint[]): void {
+  if (points.length === 0) {
+    return;
+  }
+
+  const windowRadius = 2;
+  const smoothedHeadings: number[] = Array(points.length).fill(0);
+
+  for (let index = 0; index < points.length; index += 1) {
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
+
+    for (let offset = -windowRadius; offset <= windowRadius; offset += 1) {
+      const neighbor = points[index + offset];
+      if (!neighbor) {
+        continue;
+      }
+
+      const vx = neighbor.velocityX ?? 0;
+      const vy = neighbor.velocityY ?? 0;
+      const magnitude = Math.hypot(vx, vy);
+      if (magnitude < 1e-3) {
+        continue;
+      }
+
+      sumX += vx / magnitude;
+      sumY += vy / magnitude;
+      count += 1;
+    }
+
+    if (count === 0) {
+      const previousHeading = index > 0 ? smoothedHeadings[index - 1] : points[index].heading ?? 0;
+      smoothedHeadings[index] = previousHeading;
+    } else {
+      smoothedHeadings[index] = Math.atan2(sumY / count, sumX / count);
+    }
+  }
+
+  for (let index = 0; index < points.length; index += 1) {
+    points[index].heading = smoothedHeadings[index];
+  }
 }
 
 export type ScenarioSource = 'example' | 'uploaded' | 'blank';
@@ -346,6 +417,8 @@ interface ScenarioStoreValue {
   showAllTrajectories: () => void;
   hideAllTrajectories: () => void;
   toggleAgentLabels: () => void;
+  toggleAgentExpert: (scenarioId: string, agentId: string) => void;
+  removeAllAgents: (scenarioId: string) => boolean;
   removeScenario: (id: string) => void;
   loadScenarioFromJson: (payload: { json: unknown; name?: string; source?: ScenarioSource }) => ScenarioResource;
   createBlankScenario: (name?: string) => ScenarioResource;
@@ -380,7 +453,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeedState] = useState(1);
   const [visibleTrajectoryIds, setVisibleTrajectoryIds] = useState<Set<string>>(new Set());
-  const [showAgentLabels, setShowAgentLabels] = useState(false);
+  const [showAgentLabels, setShowAgentLabels] = useState(true);
   const [editingState, setEditingState] = useState<EditingState>(() => createInitialEditingState());
 
   const selectScenario = useCallback((id: string) => {
@@ -415,7 +488,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     internalSetActiveFrameIndex(0);
     setVisibleTrajectoryIds(new Set(parsed.agents.map((agent) => agent.id)));
     setIsPlaying(false);
-    setShowAgentLabels(false);
+    setShowAgentLabels(true);
 
     return resource;
   }, [upsertScenario]);
@@ -448,7 +521,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     internalSetActiveFrameIndex(0);
     setVisibleTrajectoryIds(new Set(scenario.agents.map((agent) => agent.id)));
     setIsPlaying(false);
-    setShowAgentLabels(false);
+    setShowAgentLabels(true);
 
     return resource;
   }, [upsertScenario]);
@@ -488,8 +561,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       return new Set(activeScenario.agents.map((agent) => agent.id));
     });
     setIsPlaying(false);
-    setShowAgentLabels(false);
-  }, [activeScenarioId]);
+    setShowAgentLabels(Boolean(activeScenario));
+  }, [activeScenarioId, activeScenario]);
 
   useEffect(() => {
     const frameCount = activeScenario?.frames.length ?? 0;
@@ -604,6 +677,74 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   const toggleAgentLabels = useCallback(() => {
     setShowAgentLabels((prev) => !prev);
   }, []);
+
+  const toggleAgentExpert = useCallback<ScenarioStoreValue['toggleAgentExpert']>((scenarioId, agentId) => {
+    setScenarios((prev) => prev.map((resource) => {
+      if (resource.id !== scenarioId) {
+        return resource;
+      }
+
+      const scenario = resource.scenario;
+      const targetIndex = scenario.agents.findIndex((agent) => agent.id === agentId);
+      if (targetIndex === -1) {
+        return resource;
+      }
+
+      const nextAgents = scenario.agents.map((agent, index) => (
+        index === targetIndex
+          ? { ...agent, isExpert: !agent.isExpert }
+          : agent
+      ));
+
+      return {
+        ...resource,
+        scenario: {
+          ...scenario,
+          agents: nextAgents
+        }
+      };
+    }));
+  }, []);
+
+  const removeAllAgents = useCallback<ScenarioStoreValue['removeAllAgents']>((scenarioId) => {
+    let didRemove = false;
+
+    setScenarios((prev) => prev.map((resource) => {
+      if (resource.id !== scenarioId) {
+        return resource;
+      }
+
+      if (resource.scenario.agents.length === 0) {
+        return resource;
+      }
+
+      didRemove = true;
+      const nextScenario: WaymoScenario = {
+        ...resource.scenario,
+        agents: [],
+        frames: resource.scenario.frames.map((frame) => ({
+          ...frame,
+          agents: []
+        })),
+        metadata: {
+          ...resource.scenario.metadata,
+          frameCount: resource.scenario.metadata.frameCount,
+          durationSeconds: resource.scenario.metadata.durationSeconds
+        },
+        bounds: resource.scenario.bounds
+      };
+      return {
+        ...resource,
+        scenario: nextScenario
+      };
+    }));
+
+    if (didRemove && activeScenarioId === scenarioId) {
+      setVisibleTrajectoryIds(new Set());
+    }
+
+    return didRemove;
+  }, [activeScenarioId]);
 
   const resetEditing = useCallback(() => {
     setEditingState(() => createInitialEditingState());
@@ -797,11 +938,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       const targetX = next.x ?? anchorPoint.x;
       const targetY = next.y ?? anchorPoint.y;
       const targetHeading = next.headingRadians ?? anchorPoint.heading ?? 0;
-      const deltaX = targetX - anchorPoint.x;
-      const deltaY = targetY - anchorPoint.y;
       const deltaHeading = targetHeading - (anchorPoint.heading ?? 0);
 
-      const updatedAgent = shiftAgentTrajectory(agent, deltaX, deltaY, deltaHeading);
+      const updatedAgent = transformAgentTrajectory(agent, anchorPoint, targetX, targetY, deltaHeading);
       const nextAgents = resource.scenario.agents.map((item) => (item.id === agentId ? updatedAgent : item));
       const nextScenario = withScenarioRebuild(resource.scenario, nextAgents);
 
@@ -910,6 +1049,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     showAllTrajectories,
     hideAllTrajectories,
     toggleAgentLabels,
+    toggleAgentExpert,
+    removeAllAgents,
     removeScenario,
     loadScenarioFromJson,
     createBlankScenario,
@@ -936,6 +1077,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     showAllTrajectories,
     hideAllTrajectories,
     toggleAgentLabels,
+    toggleAgentExpert,
+    removeAllAgents,
     removeScenario,
     loadScenarioFromJson,
     createBlankScenario,

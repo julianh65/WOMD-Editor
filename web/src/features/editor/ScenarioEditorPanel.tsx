@@ -13,6 +13,8 @@ function ScenarioEditorPanel() {
     hideAllTrajectories,
     showAgentLabels,
     toggleAgentLabels,
+    toggleAgentExpert,
+    removeAllAgents,
     editing
   } = useScenarioStore();
   const {
@@ -122,6 +124,22 @@ function ScenarioEditorPanel() {
     setStartPoseDraft((prev) => ({ ...prev, [field]: value }));
   }, []);
 
+  const handleDeleteAllAgents = useCallback(() => {
+    if (!activeScenario || !activeScenarioId || activeScenario.agents.length === 0) {
+      return;
+    }
+
+    const confirmed = window.confirm('Delete all agents from this scenario? This cannot be undone.');
+    if (!confirmed) {
+      return;
+    }
+
+    const removed = removeAllAgents(activeScenarioId);
+    if (removed) {
+      clearSelection();
+    }
+  }, [activeScenario, activeScenarioId, removeAllAgents, clearSelection]);
+
   const commitStartPose = useCallback(() => {
     if (!activeScenario || !activeScenarioId || !selectedAgent) {
       return;
@@ -174,6 +192,14 @@ function ScenarioEditorPanel() {
     updateAgentStartPose,
     pushHistoryEntry
   ]);
+
+  const handleToggleExpert = useCallback(() => {
+    if (!activeScenarioId || !selectedAgent) {
+      return;
+    }
+
+    toggleAgentExpert(activeScenarioId, selectedAgent.id);
+  }, [activeScenarioId, selectedAgent, toggleAgentExpert]);
 
   const handleStartPoseKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
@@ -230,6 +256,9 @@ function ScenarioEditorPanel() {
           <div className="editor-panel__section-actions">
             <button type="button" className="button button--secondary" onClick={allVisible ? hideAllTrajectories : showAllTrajectories}>
               {allVisible ? 'Hide All' : 'Show All'}
+            </button>
+            <button type="button" className="button button--danger" onClick={handleDeleteAllAgents}>
+              Delete All
             </button>
           </div>
         </div>
@@ -298,6 +327,14 @@ function ScenarioEditorPanel() {
                 <span>{selectedAgent.isExpert ? 'Yes' : 'No'}</span>
               </li>
             </ul>
+            <label className="toggle-row">
+              <span>Mark as Expert</span>
+              <input
+                type="checkbox"
+                checked={Boolean(selectedAgent.isExpert)}
+                onChange={handleToggleExpert}
+              />
+            </label>
             <div className="selection-edit-grid">
               <label>
                 Start X (m)
