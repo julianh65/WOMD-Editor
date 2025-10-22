@@ -6,6 +6,27 @@
   color: #e2e8f0;
 }
 
+.app-banner {
+  padding: 0.6rem 1.2rem;
+  text-align: center;
+  font-size: 0.85rem;
+  letter-spacing: 0.03em;
+  background: rgba(37, 99, 235, 0.15);
+  border-bottom: 1px solid rgba(59, 130, 246, 0.3);
+  color: #bfdbfe;
+}
+
+.app-banner strong {
+  font-weight: 700;
+  margin-right: 0.35rem;
+}
+
+.app-banner--wip {
+  background: rgba(56, 189, 248, 0.12);
+  border-bottom-color: rgba(56, 189, 248, 0.35);
+  color: #c6fafe;
+}
+
 .app-body {
   flex: 1;
   display: grid;
@@ -327,6 +348,22 @@
   height: 1rem;
 }
 
+.viewer__toolbar-button-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+}
+
+.viewer__toolbar-button-note {
+  margin-top: 0.15rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(250, 204, 21, 0.85);
+}
+
 .viewer__toolbar-banner {
   pointer-events: auto;
   padding: 0.5rem 0.75rem;
@@ -457,6 +494,12 @@
   align-items: center;
 }
 
+.editor-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .editor-panel__controls label {
   display: flex;
   flex-direction: column;
@@ -517,6 +560,47 @@
   padding: 0.5rem 0.6rem;
   background: rgba(15, 23, 42, 0.75);
   color: #e2e8f0;
+}
+
+.selection-summary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.selection-summary li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.6rem;
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  font-size: 0.85rem;
+  color: #e2e8f0;
+}
+
+.selection-summary li span:first-child {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  color: #cbd5f5;
+}
+
+.selection-summary li span:last-child,
+.selection-summary li code {
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.selection-summary code {
+  border-radius: 0.4rem;
+  padding: 0.15rem 0.35rem;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.35);
 }
 
 .trajectory-list {

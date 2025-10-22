@@ -7,18 +7,12 @@ function ScenarioSidebar() {
     activeScenarioId,
     selectScenario,
     removeScenario,
-    createBlankScenario,
     loadScenarioFromJson
   } = useScenarioStore();
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const sortedScenarios = useMemo(() => [...scenarios].sort((a, b) => a.name.localeCompare(b.name)), [scenarios]);
-
-  const handleCreateBlank = useCallback(() => {
-    const result = createBlankScenario();
-    setMessage(`Created ${result.name}`);
-  }, [createBlankScenario]);
 
   const handleFileUpload = useCallback<ChangeEventHandler<HTMLInputElement>>((event) => {
     const files = event.target.files;
@@ -56,9 +50,6 @@ function ScenarioSidebar() {
       </div>
 
       <div className="sidebar__actions">
-        <button type="button" className="button button--primary" onClick={handleCreateBlank}>
-          New Blank Scenario
-        </button>
         <label className="upload">
           <input type="file" accept="application/json" multiple onChange={handleFileUpload} />
           <span>Import JSON…</span>

@@ -15,13 +15,18 @@ function ScenarioEditorPanel() {
     toggleAgentLabels,
     toggleAgentExpert,
     removeAllAgents,
+    spawnVehicleAgent,
     editing
   } = useScenarioStore();
   const {
     state: editingState,
     selectEntity,
     clearSelection,
-    pushHistoryEntry
+    pushHistoryEntry,
+    undo,
+    redo,
+    canUndo,
+    canRedo
   } = editing;
   const [localName, setLocalName] = useState('');
   const [startPoseDraft, setStartPoseDraft] = useState({ x: '', y: '', heading: '' });
@@ -44,6 +49,11 @@ function ScenarioEditorPanel() {
       return;
     }
 
+    const previousName = activeScenario.metadata.name;
+    if (previousName === nextName) {
+      return;
+    }
+
     updateScenario(activeScenarioId, (current) => ({
       ...current,
       metadata: {
@@ -51,14 +61,30 @@ function ScenarioEditorPanel() {
         name: nextName
       }
     }));
-  }, [activeScenario, activeScenarioId, localName, updateScenario]);
+
+    const now = Date.now();
+    pushHistoryEntry({
+      id: `rename-${now.toString(36)}`,
+      label: `Renamed scenario to ${nextName}`,
+      timestamp: now
+    });
+  }, [activeScenario, activeScenarioId, localName, updateScenario, pushHistoryEntry]);
+
+  const handleUndo = useCallback(() => {
+    undo();
+  }, [undo]);
+
+  const handleRedo = useCallback(() => {
+    redo();
+  }, [redo]);
 
   const handleExport = useCallback(() => {
     if (!activeScenario) {
       return;
     }
 
-    const blob = new Blob([JSON.stringify(activeScenario.raw ?? activeScenario, null, 2)], { type: 'application/json' });
+    const { raw: _raw, ...exportableScenario } = activeScenario;
+    const blob = new Blob([JSON.stringify(exportableScenario, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -137,8 +163,33 @@ function ScenarioEditorPanel() {
     const removed = removeAllAgents(activeScenarioId);
     if (removed) {
       clearSelection();
+      const now = Date.now();
+      pushHistoryEntry({
+        id: `delete-all-${now.toString(36)}`,
+        label: 'Removed all agents',
+        timestamp: now
+      });
     }
-  }, [activeScenario, activeScenarioId, removeAllAgents, clearSelection]);
+  }, [activeScenario, activeScenarioId, removeAllAgents, clearSelection, pushHistoryEntry]);
+
+  const handleSpawnVehicle = useCallback(() => {
+    if (!activeScenarioId) {
+      return;
+    }
+
+    const spawned = spawnVehicleAgent(activeScenarioId);
+    if (!spawned) {
+      return;
+    }
+
+    selectEntity({ kind: 'agent', id: spawned.id });
+    const now = Date.now();
+    pushHistoryEntry({
+      id: `spawn-${spawned.id}-${now.toString(36)}`,
+      label: `Spawned ${spawned.displayName ?? spawned.id}`,
+      timestamp: now
+    });
+  }, [activeScenarioId, spawnVehicleAgent, selectEntity, pushHistoryEntry]);
 
   const commitStartPose = useCallback(() => {
     if (!activeScenario || !activeScenarioId || !selectedAgent) {
@@ -198,8 +249,19 @@ function ScenarioEditorPanel() {
       return;
     }
 
-    toggleAgentExpert(activeScenarioId, selectedAgent.id);
-  }, [activeScenarioId, selectedAgent, toggleAgentExpert]);
+    const nextIsExpert = !selectedAgent.isExpert;
+    const updated = toggleAgentExpert(activeScenarioId, selectedAgent.id);
+    if (updated) {
+      const now = Date.now();
+      pushHistoryEntry({
+        id: `expert-${selectedAgent.id}-${now.toString(36)}`,
+        label: nextIsExpert
+          ? `Marked ${selectedAgent.displayName ?? selectedAgent.id} as expert`
+          : `Unmarked ${selectedAgent.displayName ?? selectedAgent.id} as expert`,
+        timestamp: now
+      });
+    }
+  }, [activeScenarioId, selectedAgent, toggleAgentExpert, pushHistoryEntry]);
 
   const handleStartPoseKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
@@ -220,9 +282,34 @@ function ScenarioEditorPanel() {
     <section className="editor-panel">
       <div className="editor-panel__header">
         <h3>Scenario Details</h3>
-        <button type="button" className="button" onClick={handleExport}>
-          Export JSON
-        </button>
+        <div className="editor-panel__header-actions">
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={handleUndo}
+            disabled={!canUndo}
+            title="Undo is still a work in progress"
+          >
+            Undo (doesn't work yet)
+          </button>
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={handleRedo}
+            disabled={!canRedo}
+            title="Redo is still a work in progress"
+          >
+            Redo (doesn't work yet)
+          </button>
+          <button
+            type="button"
+            className="button"
+            onClick={handleExport}
+            title="Export is still a work in progress"
+          >
+            Export JSON (doesn't work yet)
+          </button>
+        </div>
       </div>
 
       <div className="editor-panel__controls">
@@ -254,6 +341,9 @@ function ScenarioEditorPanel() {
         <div className="editor-panel__section-header">
           <h4>Agent Trajectories</h4>
           <div className="editor-panel__section-actions">
+            <button type="button" className="button button--primary" onClick={handleSpawnVehicle}>
+              Spawn Vehicle
+            </button>
             <button type="button" className="button button--secondary" onClick={allVisible ? hideAllTrajectories : showAllTrajectories}>
               {allVisible ? 'Hide All' : 'Show All'}
             </button>
@@ -378,7 +468,7 @@ function ScenarioEditorPanel() {
             </button>
           </>
         ) : (
-          <p className="editor-panel__placeholder">Select an agent to inspect trajectory details.</p>
+          <p className="editor-panel__placeholder">Select an agent to edit trajectory details.</p>
         )}
       </div>
     </section>

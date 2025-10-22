@@ -62,18 +62,13 @@ Deliver a visual, browser-based scenario authoring environment for the Waymo Ope
 
 Other todos:
 1. Add ability to set episode length manually
-2. Undo button
-3. Add some instructions / documentation
-4. For the start position can we have something like in unity where it has an arrow up and right that we can drag to move their x and y coords? (small). Also a little rotation wheel to set their rotation (small)
-5. Make it straight export as .bin
-6. when we load into the map we're not centered correctly always, sometimes we're a bit left or right (small) -- if this is too hard or takes too much effort don't bother
-7. after recording a driving path we need the initial angle of the car to be facing the direction that we go for both record and drive
-8. if we rotate them their path should rotate as well as if we're rotating both the initial car rotation and their entire path (small)
-9. polish up the side bar ui for selected, looks just like a bullet point list right now (small)
+2. Add some instructions / documentation
+3. Make it straight export as .bin
+4. after recording a driving path we need the initial angle of the car to be facing the direction that we go for both record and drive
 
 Fixes
 1. When rotating an agent if it has a path we should probably keep that path locked so that the path rotates as well
 
 ---
-Last updated: Drive mode tuning + trajectory tooling adjustments (Editing sprint, Week 2)._
+Last updated: Transform gizmo, undo stack, and UI polish (Editing sprint, Week 3)._
 ---

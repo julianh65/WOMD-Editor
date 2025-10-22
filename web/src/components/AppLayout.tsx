@@ -7,6 +7,9 @@ import '@/styles/app.css';
 function AppLayout() {
   return (
     <div className="app-shell">
+      <div className="app-banner app-banner--wip">
+        <strong>Work in progress:</strong> this editor is experimental and still evolving.
+      </div>
       <div className="app-body">
         <ScenarioSidebar />
         <main className="workspace-grid">
