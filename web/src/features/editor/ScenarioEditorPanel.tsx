@@ -2,6 +2,13 @@ import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type Keybo
 import { downloadScenarioAsJson } from '@/lib/scenarioExporter';
 import { useScenarioStore } from '@/state/scenarioStore';
 
+const ROAD_TYPE_OPTIONS = [
+  { value: 'ROAD_EDGE', label: 'Road Edge' },
+  { value: 'ROAD_LINE', label: 'Road Line' },
+  { value: 'CROSSWALK', label: 'Crosswalk' },
+  { value: 'OTHER', label: 'Other' }
+] as const;
+
 function ScenarioEditorPanel() {
   const {
     activeScenario,
@@ -17,6 +24,8 @@ function ScenarioEditorPanel() {
     toggleAgentExpert,
     removeAllAgents,
     spawnVehicleAgent,
+    setRoadEdgeType,
+    removeRoadEdge,
     editing
   } = useScenarioStore();
   const {
@@ -95,6 +104,12 @@ function ScenarioEditorPanel() {
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId),
     [agents, selectedAgentId]
+  );
+  const selectedRoadEdgeId = editingState.selectedEntity?.kind === 'roadEdge' ? editingState.selectedEntity.id : undefined;
+  const roadEdges = useMemo(() => activeScenario?.roadEdges ?? [], [activeScenario?.roadEdges]);
+  const selectedRoadEdge = useMemo(
+    () => roadEdges.find((edge) => edge.id === selectedRoadEdgeId),
+    [roadEdges, selectedRoadEdgeId]
   );
 
   useEffect(() => {
@@ -271,6 +286,49 @@ function ScenarioEditorPanel() {
     }
   }, [commitStartPose]);
 
+  const handleRoadTypeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    if (!activeScenarioId || !selectedRoadEdge) {
+      return;
+    }
+
+    const nextType = event.target.value as (typeof ROAD_TYPE_OPTIONS)[number]['value'];
+    if (nextType === selectedRoadEdge.type) {
+      return;
+    }
+
+    const updated = setRoadEdgeType(activeScenarioId, selectedRoadEdge.id, nextType);
+    if (updated) {
+      const now = Date.now();
+      pushHistoryEntry({
+        id: `road-type-${selectedRoadEdge.id}-${now.toString(36)}`,
+        label: `Set ${selectedRoadEdge.id} type to ${nextType}`,
+        timestamp: now
+      });
+    }
+  }, [activeScenarioId, selectedRoadEdge, setRoadEdgeType, pushHistoryEntry]);
+
+  const handleDeleteRoadEdge = useCallback(() => {
+    if (!activeScenarioId || !selectedRoadEdge) {
+      return;
+    }
+
+    const confirmed = window.confirm('Delete this road segment? This cannot be undone.');
+    if (!confirmed) {
+      return;
+    }
+
+    const removed = removeRoadEdge(activeScenarioId, selectedRoadEdge.id);
+    if (removed) {
+      clearSelection();
+      const now = Date.now();
+      pushHistoryEntry({
+        id: `road-delete-${selectedRoadEdge.id}-${now.toString(36)}`,
+        label: `Deleted road segment ${selectedRoadEdge.id}`,
+        timestamp: now
+      });
+    }
+  }, [activeScenarioId, selectedRoadEdge, removeRoadEdge, clearSelection, pushHistoryEntry]);
+
   if (!activeScenario) {
     return (
       <section className="editor-panel editor-panel--empty">
@@ -291,7 +349,7 @@ function ScenarioEditorPanel() {
             disabled={!canUndo}
             title="Undo is still a work in progress"
           >
-            Undo (doesn't work yet)
+            Undo (doesn't work)
           </button>
           <button
             type="button"
@@ -300,7 +358,7 @@ function ScenarioEditorPanel() {
             disabled={!canRedo}
             title="Redo is still a work in progress"
           >
-            Redo (doesn't work yet)
+            Redo (doesn't work)
           </button>
           <button
             type="button"
@@ -486,8 +544,38 @@ function ScenarioEditorPanel() {
               Apply Start Pose
             </button>
           </>
+        ) : selectedRoadEdge ? (
+          <>
+            <ul className="selection-summary">
+              <li>
+                <span>ID</span>
+                <code>{selectedRoadEdge.id}</code>
+              </li>
+              <li>
+                <span>Type</span>
+                <span>{selectedRoadEdge.type ?? 'Unspecified'}</span>
+              </li>
+              <li>
+                <span>Vertices</span>
+                <span>{selectedRoadEdge.points.length}</span>
+              </li>
+            </ul>
+            <label>
+              Road Type
+              <select value={selectedRoadEdge.type ?? 'OTHER'} onChange={handleRoadTypeChange}>
+                {ROAD_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="button" className="button button--secondary" onClick={handleDeleteRoadEdge}>
+              Delete Road Segment
+            </button>
+          </>
         ) : (
-          <p className="editor-panel__placeholder">Select an agent to edit trajectory details.</p>
+          <p className="editor-panel__placeholder">Select an agent or road segment to edit.</p>
         )}
       </div>
     </section>

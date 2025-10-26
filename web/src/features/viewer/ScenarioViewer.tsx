@@ -3,7 +3,8 @@ import {
   useScenarioStore,
   type EditingEntityRef,
   type EditingMode,
-  type EditingTool
+  type EditingTool,
+  type RoadDraft
 } from '@/state/scenarioStore';
 import { RoadEdge, ScenarioAgent, ScenarioBounds, ScenarioFrameAgentState, TrajectoryPoint } from '@/types/scenario';
 import { TOOLBAR_ICONS } from './toolbarIcons';
@@ -32,7 +33,13 @@ type TrajectoryDrawOptions = {
   variant?: 'ghost';
 };
 
-type DragMode = 'pan' | 'record' | 'gizmo-translate-x' | 'gizmo-translate-y' | 'gizmo-rotate';
+interface RoadDrawOptions {
+  selectedId?: string;
+  hoveredId?: string;
+  showVertices?: boolean;
+}
+
+type DragMode = 'pan' | 'record' | 'gizmo-translate-x' | 'gizmo-translate-y' | 'gizmo-rotate' | 'road-handle';
 
 interface DragGizmoState {
   kind: 'translate' | 'rotate';
@@ -44,6 +51,13 @@ interface DragGizmoState {
   changed: boolean;
 }
 
+interface DragRoadHandleState {
+  roadId: string;
+  pointIndex: number;
+  originalPoints: Array<{ x: number; y: number }>;
+  changed: boolean;
+}
+
 interface DragState {
   active: boolean;
   pointerId: number | null;
@@ -52,6 +66,7 @@ interface DragState {
   hasMoved: boolean;
   mode: DragMode;
   gizmo?: DragGizmoState;
+  roadHandle?: DragRoadHandleState;
 }
 
 type AgentHighlightState = {
@@ -64,6 +79,17 @@ interface BaseTransformContext {
   transform: CanvasTransform;
   width: number;
   height: number;
+}
+
+interface RoadHandleHit {
+  edge: RoadEdge;
+  pointIndex: number;
+  distance: number;
+}
+
+interface RoadSegmentHit {
+  edge: RoadEdge;
+  distance: number;
 }
 
 const MIN_ZOOM = 0.25;
@@ -152,6 +178,10 @@ const ROAD_STYLES: Record<string, { stroke: string; width: number; dash?: number
   OTHER: { stroke: 'rgba(148, 163, 184, 0.35)', width: 1.0 }
 };
 
+const ROAD_VERTEX_HIT_RADIUS_METERS = 1.25;
+const ROAD_SEGMENT_HIT_RADIUS_METERS = 1.5;
+const ROAD_HANDLE_BASE_RADIUS_PX = 6;
+
 const GIZMO_TRANSLATE_LENGTH = 3;
 const GIZMO_ROTATION_RADIUS = 4;
 const GIZMO_HANDLE_HIT_RADIUS = 18;
@@ -237,9 +267,11 @@ function drawRoadEdges(
   edges: RoadEdge[],
   base: CanvasTransform,
   camera: CameraState,
-  dims: CanvasDims
+  dims: CanvasDims,
+  options: RoadDrawOptions = {}
 ) {
   ctx.save();
+  const { selectedId, hoveredId, showVertices } = options;
 
   edges.forEach((edge) => {
     if (!edge.points || edge.points.length < 2) {
@@ -247,9 +279,22 @@ function drawRoadEdges(
     }
 
     const style = edge.type ? ROAD_STYLES[edge.type] ?? ROAD_STYLES.OTHER : ROAD_STYLES.OTHER;
-    ctx.strokeStyle = style.stroke;
-    ctx.lineWidth = style.width;
-    ctx.setLineDash(style.dash ?? []);
+    const isSelected = edge.id === selectedId;
+    const isHovered = edge.id === hoveredId && !isSelected;
+    const strokeColour = isSelected
+      ? 'rgba(250, 204, 21, 0.95)'
+      : isHovered
+        ? 'rgba(34, 211, 238, 0.92)'
+        : style.stroke;
+    const width = isSelected
+      ? style.width * 1.4
+      : isHovered
+        ? style.width * 1.15
+        : style.width;
+
+    ctx.strokeStyle = strokeColour;
+    ctx.lineWidth = Math.max(width, width / camera.zoom);
+    ctx.setLineDash(isSelected ? [] : style.dash ?? []);
 
     const first = worldToCanvas(edge.points[0], base, camera, dims);
     ctx.beginPath();
@@ -258,6 +303,76 @@ function drawRoadEdges(
       const { x, y } = worldToCanvas(edge.points[i], base, camera, dims);
       ctx.lineTo(x, y);
     }
+    ctx.stroke();
+
+    if (showVertices && isSelected) {
+      drawRoadVertexHandles(ctx, edge, base, camera, dims);
+    }
+  });
+
+  ctx.restore();
+}
+
+function drawRoadVertexHandles(
+  ctx: CanvasRenderingContext2D,
+  edge: RoadEdge,
+  base: CanvasTransform,
+  camera: CameraState,
+  dims: CanvasDims
+) {
+  const radius = Math.max(ROAD_HANDLE_BASE_RADIUS_PX, ROAD_HANDLE_BASE_RADIUS_PX / camera.zoom);
+  const lineWidth = Math.max(1.4, 1.4 / camera.zoom);
+  ctx.save();
+  ctx.lineWidth = lineWidth;
+  edge.points.forEach((point, index) => {
+    const { x, y } = worldToCanvas(point, base, camera, dims);
+    ctx.beginPath();
+    ctx.fillStyle = index === 0 ? 'rgba(14, 165, 233, 0.95)' : 'rgba(248, 250, 252, 0.95)';
+    ctx.strokeStyle = index === 0 ? 'rgba(14, 116, 144, 0.9)' : 'rgba(15, 23, 42, 0.85)';
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+function drawRoadDraft(
+  ctx: CanvasRenderingContext2D,
+  draft: RoadDraft,
+  base: CanvasTransform,
+  camera: CameraState,
+  dims: CanvasDims
+) {
+  if (draft.points.length === 0) {
+    return;
+  }
+
+  ctx.save();
+  const dash = Math.max(10, 14 / camera.zoom);
+  ctx.lineWidth = Math.max(2.4, 2.4 / camera.zoom);
+  ctx.strokeStyle = 'rgba(14, 165, 233, 0.9)';
+  ctx.setLineDash([dash, dash]);
+
+  const start = worldToCanvas(draft.points[0], base, camera, dims);
+  ctx.beginPath();
+  ctx.moveTo(start.x, start.y);
+  for (let i = 1; i < draft.points.length; i += 1) {
+    const { x, y } = worldToCanvas(draft.points[i], base, camera, dims);
+    ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  draft.points.forEach((point, index) => {
+    const { x, y } = worldToCanvas(point, base, camera, dims);
+    ctx.beginPath();
+    ctx.fillStyle = index === draft.points.length - 1
+      ? 'rgba(248, 250, 252, 0.95)'
+      : 'rgba(14, 165, 233, 0.95)';
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.lineWidth = Math.max(1.2, 1.2 / camera.zoom);
+    ctx.arc(x, y, Math.max(5, 7 / camera.zoom), 0, Math.PI * 2);
+    ctx.fill();
     ctx.stroke();
   });
 
@@ -461,6 +576,49 @@ function distanceToTrajectory(point: { x: number; y: number }, agent: ScenarioAg
   }
 
   return best;
+}
+
+function findRoadHandleHit(point: { x: number; y: number }, edges: RoadEdge[], threshold: number): RoadHandleHit | undefined {
+  let closest: RoadHandleHit | undefined;
+
+  edges.forEach((edge) => {
+    edge.points.forEach((vertex, index) => {
+      const distance = Math.hypot(point.x - vertex.x, point.y - vertex.y);
+      if (distance <= threshold && (!closest || distance < closest.distance)) {
+        closest = {
+          edge,
+          pointIndex: index,
+          distance
+        };
+      }
+    });
+  });
+
+  return closest;
+}
+
+function findRoadSegmentHit(point: { x: number; y: number }, edges: RoadEdge[], threshold: number): RoadSegmentHit | undefined {
+  let closest: RoadSegmentHit | undefined;
+
+  edges.forEach((edge) => {
+    if (edge.points.length < 2) {
+      return;
+    }
+
+    for (let index = 1; index < edge.points.length; index += 1) {
+      const start = edge.points[index - 1];
+      const end = edge.points[index];
+      const distance = distanceToSegment(point, start, end);
+      if (distance <= threshold && (!closest || distance < closest.distance)) {
+        closest = {
+          edge,
+          distance
+        };
+      }
+    }
+  });
+
+  return closest;
 }
 
 function isGizmoMode(mode: DragMode): boolean {
@@ -682,6 +840,8 @@ function ScenarioViewer() {
     setActiveFrameIndex,
     applyRecordedTrajectory,
     updateAgentStartPose,
+    addRoadEdge,
+    updateRoadEdgePoints,
     editing
   } = useScenarioStore();
   const {
@@ -695,7 +855,12 @@ function ScenarioViewer() {
     beginTrajectoryRecording,
     appendTrajectorySample,
     completeTrajectoryRecording,
-    pushHistoryEntry
+    pushHistoryEntry,
+    beginRoadDraft,
+    appendRoadDraftPoint,
+    removeRoadDraftPoint,
+    completeRoadDraft,
+    cancelRoadDraft
   } = editing;
   const rotationMode = editingState.rotationMode;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -707,7 +872,8 @@ function ScenarioViewer() {
     lastY: 0,
     hasMoved: false,
     mode: 'pan',
-    gizmo: undefined
+    gizmo: undefined,
+    roadHandle: undefined
   });
 
   const [camera, setCamera] = useState<CameraState>({ zoom: 1, panX: 0, panY: 0, rotation: 0 });
@@ -743,6 +909,9 @@ function ScenarioViewer() {
   const isPointerRecordActive = isPointerRecordTool && !isDriveActive;
   const isPointerRecording = isRecording && !isDriveActive;
   const trajectoryDraft = editingState.trajectoryDraft;
+  const roadDraft = editingState.roadDraft;
+  const selectedRoadId = editingState.selectedEntity?.kind === 'roadEdge' ? editingState.selectedEntity.id : undefined;
+  const hoveredRoadId = editingState.hoveredEntity?.kind === 'roadEdge' ? editingState.hoveredEntity.id : undefined;
 
   const summary = useMemo(() => {
     if (!activeScenario) {
@@ -852,7 +1021,17 @@ function ScenarioViewer() {
     if (entity.kind === 'agent' && activeTool.startsWith('road')) {
       setEditingTool('trajectory-edit');
     }
-  }, [clearSelection, selectEntity, activeTool, setEditingTool]);
+
+    if (entity.kind === 'roadEdge' && editingMode === 'road' && activeTool !== 'road-edit') {
+      setEditingTool('road-edit');
+    }
+  }, [
+    clearSelection,
+    selectEntity,
+    activeTool,
+    setEditingTool,
+    editingMode
+  ]);
 
   const getEntityAtCanvasXY = useCallback((canvasX: number, canvasY: number): EditingEntityRef | undefined => {
     const baseContext = baseTransformRef.current;
@@ -895,8 +1074,20 @@ function ScenarioViewer() {
       return { kind: 'agent', id: closest.id };
     }
 
+    if (isRoadMode) {
+      const handleHit = findRoadHandleHit(worldPoint, activeScenario.roadEdges, ROAD_VERTEX_HIT_RADIUS_METERS);
+      if (handleHit) {
+        return { kind: 'roadEdge', id: handleHit.edge.id };
+      }
+
+      const segmentHit = findRoadSegmentHit(worldPoint, activeScenario.roadEdges, ROAD_SEGMENT_HIT_RADIUS_METERS);
+      if (segmentHit) {
+        return { kind: 'roadEdge', id: segmentHit.edge.id };
+      }
+    }
+
     return undefined;
-  }, [activeScenario, activeFrame, agentById, trajectoryAgents, camera]);
+  }, [activeScenario, activeFrame, agentById, trajectoryAgents, camera, isRoadMode]);
 
   const updateHoverFromEvent = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) {
@@ -913,14 +1104,18 @@ function ScenarioViewer() {
     const canvasY = event.clientY - rect.top;
     const hit = getEntityAtCanvasXY(canvasX, canvasY);
 
-    if (!hit || hit.kind !== 'agent') {
+    if (!hit) {
       if (editingState.hoveredEntity) {
         hoverEntity(undefined);
       }
       return;
     }
 
-    if (!editingState.hoveredEntity || editingState.hoveredEntity.id !== hit.id) {
+    if (
+      !editingState.hoveredEntity
+      || editingState.hoveredEntity.id !== hit.id
+      || editingState.hoveredEntity.kind !== hit.kind
+    ) {
       hoverEntity(hit);
     }
   }, [getEntityAtCanvasXY, hoverEntity, editingState.hoveredEntity]);
@@ -1383,6 +1578,74 @@ function ScenarioViewer() {
     }
   }, [activeTool, setEditingTool, isRecording, cancelTrajectoryRecording, isDriveActive, stopDriveMode]);
 
+  const finalizeRoadDraft = useCallback(() => {
+    if (!activeScenarioId) {
+      return false;
+    }
+
+    const draft = completeRoadDraft();
+    if (!draft || draft.points.length < 2) {
+      return false;
+    }
+
+    const created = addRoadEdge(activeScenarioId, {
+      id: draft.id,
+      type: draft.type,
+      points: draft.points
+    });
+
+    if (!created) {
+      return false;
+    }
+
+    selectEntity({ kind: 'roadEdge', id: created.id });
+    const now = Date.now();
+    pushHistoryEntry({
+      id: `road-add-${created.id}-${now.toString(36)}`,
+      label: `Drew ${created.type ?? 'road edge'}`,
+      timestamp: now
+    });
+
+    return true;
+  }, [
+    activeScenarioId,
+    completeRoadDraft,
+    addRoadEdge,
+    selectEntity,
+    pushHistoryEntry
+  ]);
+
+  useEffect(() => {
+    if (!isRoadMode || activeTool !== 'road-add') {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        finalizeRoadDraft();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelRoadDraft();
+      } else if ((event.key === 'Backspace' || event.key === 'Delete') && (roadDraft?.points.length ?? 0) > 0) {
+        event.preventDefault();
+        removeRoadDraftPoint();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [
+    isRoadMode,
+    activeTool,
+    finalizeRoadDraft,
+    cancelRoadDraft,
+    removeRoadDraftPoint,
+    roadDraft?.points.length
+  ]);
+
 
   useEffect(() => {
     setCamera({ zoom: 1, panX: 0, panY: 0, rotation: 0 });
@@ -1428,7 +1691,15 @@ function ScenarioViewer() {
     const baseTransform = computeTransform(activeScenario.bounds, width, height);
     baseTransformRef.current = { transform: baseTransform, width, height };
 
-    drawRoadEdges(ctx, activeScenario.roadEdges, baseTransform, camera, dims);
+    drawRoadEdges(ctx, activeScenario.roadEdges, baseTransform, camera, dims, {
+      selectedId: selectedRoadId,
+      hoveredId: hoveredRoadId,
+      showVertices: isRoadMode && activeTool === 'road-edit'
+    });
+
+    if (roadDraft) {
+      drawRoadDraft(ctx, roadDraft, baseTransform, camera, dims);
+    }
 
     const drivingAgentId = driveSessionRef.current?.agentId;
 
@@ -1521,7 +1792,12 @@ function ScenarioViewer() {
     isDriveActive,
     trajectoryDraft,
     selectedAnchorPoint,
-    selectedAgentInfo
+    selectedAgentInfo,
+    selectedRoadId,
+    hoveredRoadId,
+    isRoadMode,
+    activeTool,
+    roadDraft
   ]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -1535,6 +1811,46 @@ function ScenarioViewer() {
     const canvasX = event.clientX - rect.left;
     const canvasY = event.clientY - rect.top;
     const isPrimaryButton = event.button === 0;
+
+    if (isPrimaryButton && isRoadMode && baseContext) {
+      const dims: CanvasDims = { width: baseContext.width, height: baseContext.height };
+      const worldPoint = canvasToWorld(canvasX, canvasY, baseContext.transform, camera, dims);
+
+      if (activeTool === 'road-add' && activeScenarioId) {
+        if (!roadDraft) {
+          beginRoadDraft({ scenarioId: activeScenarioId, startPoint: worldPoint });
+        } else {
+          appendRoadDraftPoint(worldPoint);
+        }
+        updateHoverFromEvent(event);
+        return;
+      }
+
+      if (activeTool === 'road-edit' && activeScenario) {
+        const handleHit = findRoadHandleHit(worldPoint, activeScenario.roadEdges, ROAD_VERTEX_HIT_RADIUS_METERS);
+        if (handleHit) {
+          canvas.setPointerCapture(event.pointerId);
+          dragStateRef.current = {
+            active: true,
+            pointerId: event.pointerId,
+            lastX: event.clientX,
+            lastY: event.clientY,
+            hasMoved: false,
+            mode: 'road-handle',
+            gizmo: undefined,
+            roadHandle: {
+              roadId: handleHit.edge.id,
+              pointIndex: handleHit.pointIndex,
+              originalPoints: [...handleHit.edge.points],
+              changed: false
+            }
+          };
+          setIsDragging(false);
+          applySelection({ kind: 'roadEdge', id: handleHit.edge.id });
+          return;
+        }
+      }
+    }
 
     if (
       isPrimaryButton &&
@@ -1725,6 +2041,37 @@ function ScenarioViewer() {
       return;
     }
 
+    if (state.mode === 'road-handle') {
+      const baseContext = baseTransformRef.current;
+      const canvas = canvasRef.current;
+      const handle = state.roadHandle;
+      if (!baseContext || !canvas || !handle || !activeScenarioId) {
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = event.clientX - rect.left;
+      const canvasY = event.clientY - rect.top;
+      const dims: CanvasDims = { width: baseContext.width, height: baseContext.height };
+      const pointerWorld = canvasToWorld(canvasX, canvasY, baseContext.transform, camera, dims);
+
+      const nextPoints = handle.originalPoints.map((point, index) => (
+        index === handle.pointIndex
+          ? { x: pointerWorld.x, y: pointerWorld.y }
+          : point
+      ));
+
+      updateRoadEdgePoints(activeScenarioId, handle.roadId, nextPoints);
+
+      state.roadHandle = {
+        ...handle,
+        changed: true
+      };
+      state.hasMoved = true;
+      setIsDragging(true);
+      return;
+    }
+
     const dx = event.clientX - state.lastX;
     const dy = event.clientY - state.lastY;
     state.lastX = event.clientX;
@@ -1757,7 +2104,8 @@ function ScenarioViewer() {
     activeScenarioId,
     selectedAgentId,
     updateAgentStartPose,
-    rotationMode
+    rotationMode,
+    updateRoadEdgePoints
   ]);
 
   const releasePointerCapture = useCallback((pointerId: number) => {
@@ -1775,7 +2123,8 @@ function ScenarioViewer() {
       lastY: 0,
       hasMoved: false,
       mode: 'pan',
-      gizmo: undefined
+      gizmo: undefined,
+      roadHandle: undefined
     };
     setIsDragging(false);
   }, []);
@@ -1863,6 +2212,23 @@ function ScenarioViewer() {
       return;
     }
 
+    if (state.mode === 'road-handle') {
+      const handle = state.roadHandle;
+      if (handle?.changed && activeScenarioId) {
+        const now = Date.now();
+        const roadInfo = activeScenario?.roadEdges.find((edge) => edge.id === handle.roadId);
+        pushHistoryEntry({
+          id: `road-handle-${handle.roadId}-${now.toString(36)}`,
+          label: `Adjusted ${roadInfo?.type ?? 'road edge'} vertex`,
+          timestamp: now
+        });
+      }
+
+      releasePointerCapture(event.pointerId);
+      resetDragState();
+      return;
+    }
+
     if (!state.hasMoved && event.button === 0) {
       if (canvasRef.current) {
         const rect = canvasRef.current.getBoundingClientRect();
@@ -1896,7 +2262,8 @@ function ScenarioViewer() {
     releasePointerCapture,
     resetDragState,
     selectedAgentId,
-    pushHistoryEntry
+    pushHistoryEntry,
+    activeScenario
   ]);
 
   const handlePointerLeave = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -1924,6 +2291,17 @@ function ScenarioViewer() {
             timestamp: now
           });
         }
+      } else if (state.mode === 'road-handle') {
+        const handle = state.roadHandle;
+        if (handle?.changed && activeScenarioId) {
+          const now = Date.now();
+          const roadInfo = activeScenario?.roadEdges.find((edge) => edge.id === handle.roadId);
+          pushHistoryEntry({
+            id: `road-handle-${handle.roadId}-${now.toString(36)}`,
+            label: `Adjusted ${roadInfo?.type ?? 'road edge'} vertex`,
+            timestamp: now
+          });
+        }
       }
       releasePointerCapture(event.pointerId);
       resetDragState();
@@ -1939,7 +2317,8 @@ function ScenarioViewer() {
     activeScenarioId,
     selectedAgentId,
     agentById,
-    pushHistoryEntry
+    pushHistoryEntry,
+    activeScenario
   ]);
 
   const handlePointerCancel = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -1963,6 +2342,17 @@ function ScenarioViewer() {
             timestamp: now
           });
         }
+      } else if (state.mode === 'road-handle') {
+        const handle = state.roadHandle;
+        if (handle?.changed && activeScenarioId) {
+          const now = Date.now();
+          const roadInfo = activeScenario?.roadEdges.find((edge) => edge.id === handle.roadId);
+          pushHistoryEntry({
+            id: `road-handle-${handle.roadId}-${now.toString(36)}`,
+            label: `Adjusted ${roadInfo?.type ?? 'road edge'} vertex`,
+            timestamp: now
+          });
+        }
       }
       releasePointerCapture(event.pointerId);
       resetDragState();
@@ -1977,7 +2367,8 @@ function ScenarioViewer() {
     activeScenarioId,
     selectedAgentId,
     agentById,
-    pushHistoryEntry
+    pushHistoryEntry,
+    activeScenario
   ]);
 
   const handleWheel = useCallback(
@@ -2194,6 +2585,11 @@ function ScenarioViewer() {
           {!isDriveActive && isPointerRecording && (
             <div className="viewer__toolbar-banner">
               <span>Recording path… playback reset to frame 0</span>
+            </div>
+          )}
+          {isRoadMode && activeTool === 'road-add' && (
+            <div className="viewer__toolbar-banner">
+              <span>Road draw mode – click to place vertices, Enter to finish, Esc to cancel</span>
             </div>
           )}
         </div>

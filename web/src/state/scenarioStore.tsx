@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { parseScenario } from '@/lib/scenarioParser';
 import {
+  RoadEdge,
   ScenarioAgent,
   ScenarioBounds,
   ScenarioFrame,
@@ -40,6 +41,18 @@ export interface TrajectoryDraft {
   samples: TrajectorySample[];
 }
 
+export interface RoadDraftPoint {
+  x: number;
+  y: number;
+}
+
+export interface RoadDraft {
+  id: string;
+  scenarioId: string;
+  type: RoadEdge['type'];
+  points: RoadDraftPoint[];
+}
+
 export interface EditingHistoryEntry {
   id: string;
   label: string;
@@ -59,6 +72,7 @@ export interface EditingState {
   selectedEntity?: EditingEntityRef;
   isRecording: boolean;
   trajectoryDraft?: TrajectoryDraft;
+  roadDraft?: RoadDraft;
   history: EditingHistoryState;
 }
 
@@ -71,6 +85,7 @@ function createInitialEditingState(): EditingState {
     selectedEntity: undefined,
     isRecording: false,
     trajectoryDraft: undefined,
+    roadDraft: undefined,
     history: {
       undoStack: [],
       redoStack: []
@@ -286,6 +301,31 @@ function cloneScenarioState(scenario: WaymoScenario): WaymoScenario {
   }
 
   return clone;
+}
+
+function sanitiseRoadPoints(points: RoadDraftPoint[]): RoadDraftPoint[] {
+  return points
+    .map((point) => ({
+      x: Number(point.x),
+      y: Number(point.y)
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function areRoadPointsEqual(a: RoadDraftPoint[], b: RoadDraftPoint[]) {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  for (let index = 0; index < a.length; index += 1) {
+    const current = a[index];
+    const candidate = b[index];
+    if (Math.abs(current.x - candidate.x) > 1e-6 || Math.abs(current.y - candidate.y) > 1e-6) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function transformAgentTrajectory(
@@ -531,6 +571,12 @@ export interface EditingStoreValue {
   appendTrajectorySample: (sample: TrajectorySample) => void;
   completeTrajectoryRecording: (options?: { label?: string }) => EditingHistoryEntry | undefined;
   cancelTrajectoryRecording: () => void;
+  beginRoadDraft: (input: { scenarioId: string; type?: RoadEdge['type']; startPoint?: RoadDraftPoint }) => void;
+  appendRoadDraftPoint: (point: RoadDraftPoint) => void;
+  updateRoadDraftPoint: (index: number, point: RoadDraftPoint) => void;
+  removeRoadDraftPoint: (index?: number) => void;
+  completeRoadDraft: () => RoadDraft | undefined;
+  cancelRoadDraft: () => void;
   pushHistoryEntry: (entry: EditingHistoryEntry) => void;
   undo: () => EditingHistoryEntry | undefined;
   redo: () => EditingHistoryEntry | undefined;
@@ -576,6 +622,21 @@ interface ScenarioStoreValue {
     agentId: string,
     samples: TrajectorySample[]
   ) => boolean;
+  addRoadEdge: (
+    scenarioId: string,
+    input: { id?: string; type?: RoadEdge['type']; points: RoadDraftPoint[] }
+  ) => RoadEdge | undefined;
+  updateRoadEdgePoints: (
+    scenarioId: string,
+    roadId: string,
+    points: RoadDraftPoint[]
+  ) => boolean;
+  setRoadEdgeType: (
+    scenarioId: string,
+    roadId: string,
+    type: RoadEdge['type']
+  ) => boolean;
+  removeRoadEdge: (scenarioId: string, roadId: string) => boolean;
   editing: EditingStoreValue;
 }
 
@@ -1112,15 +1173,25 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   const setEditingMode = useCallback((mode: EditingMode) => {
     setEditingState((prev) => ({
       ...prev,
-      mode
+      mode,
+      roadDraft: mode === 'road' ? prev.roadDraft : undefined
     }));
   }, []);
 
   const setEditingTool = useCallback((tool: EditingTool) => {
-    setEditingState((prev) => ({
-      ...prev,
-      activeTool: tool
-    }));
+    setEditingState((prev) => {
+      if (prev.activeTool === tool) {
+        if (tool === 'road-add' || !prev.roadDraft) {
+          return prev;
+        }
+      }
+
+      return {
+        ...prev,
+        activeTool: tool,
+        roadDraft: tool === 'road-add' ? prev.roadDraft : undefined
+      };
+    });
   }, []);
 
   const setRotationMode = useCallback((mode: 'path' | 'pose') => {
@@ -1148,6 +1219,105 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     setEditingState((prev) => ({
       ...prev,
       selectedEntity: undefined
+    }));
+  }, []);
+
+  const beginRoadDraft = useCallback((input: { scenarioId: string; type?: RoadEdge['type']; startPoint?: RoadDraftPoint }) => {
+    setEditingState((prev) => ({
+      ...prev,
+      mode: 'road',
+      activeTool: 'road-add',
+      roadDraft: {
+        id: createResourceId('road-draft'),
+        scenarioId: input.scenarioId,
+        type: input.type ?? 'ROAD_EDGE',
+        points: input.startPoint ? [input.startPoint] : []
+      }
+    }));
+  }, []);
+
+  const appendRoadDraftPoint = useCallback((point: RoadDraftPoint) => {
+    setEditingState((prev) => {
+      if (!prev.roadDraft) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        roadDraft: {
+          ...prev.roadDraft,
+          points: [...prev.roadDraft.points, point]
+        }
+      };
+    });
+  }, []);
+
+  const updateRoadDraftPoint = useCallback((index: number, point: RoadDraftPoint) => {
+    setEditingState((prev) => {
+      if (!prev.roadDraft || index < 0 || index >= prev.roadDraft.points.length) {
+        return prev;
+      }
+
+      const points = [...prev.roadDraft.points];
+      points.splice(index, 1, point);
+      return {
+        ...prev,
+        roadDraft: {
+          ...prev.roadDraft,
+          points
+        }
+      };
+    });
+  }, []);
+
+  const removeRoadDraftPoint = useCallback((index?: number) => {
+    setEditingState((prev) => {
+      if (!prev.roadDraft || prev.roadDraft.points.length === 0) {
+        return prev;
+      }
+
+      const targetIndex = typeof index === 'number'
+        ? index
+        : prev.roadDraft.points.length - 1;
+
+      if (targetIndex < 0 || targetIndex >= prev.roadDraft.points.length) {
+        return prev;
+      }
+
+      const points = [...prev.roadDraft.points];
+      points.splice(targetIndex, 1);
+
+      return {
+        ...prev,
+        roadDraft: {
+          ...prev.roadDraft,
+          points
+        }
+      };
+    });
+  }, []);
+
+  const completeRoadDraft = useCallback(() => {
+    let resolvedDraft: RoadDraft | undefined;
+    setEditingState((prev) => {
+      if (!prev.roadDraft) {
+        return prev;
+      }
+
+      resolvedDraft = prev.roadDraft;
+      return {
+        ...prev,
+        roadDraft: undefined
+      };
+    });
+
+    return resolvedDraft;
+  }, []);
+
+  const cancelRoadDraft = useCallback(() => {
+    setEditingState((prev) => ({
+      ...prev,
+      roadDraft: undefined
     }));
   }, []);
 
@@ -1381,6 +1551,119 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     return didUpdate;
   }, [applyScenarioUpdate]);
 
+  const addRoadEdge = useCallback<ScenarioStoreValue['addRoadEdge']>((scenarioId, input) => {
+    let createdEdge: RoadEdge | undefined;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const points = sanitiseRoadPoints(input.points);
+      if (points.length < 2) {
+        return scenario;
+      }
+
+      const edge: RoadEdge = {
+        id: input.id ?? createResourceId('road'),
+        type: input.type,
+        points
+      };
+
+      createdEdge = edge;
+
+      return {
+        ...scenario,
+        roadEdges: [...scenario.roadEdges, edge]
+      };
+    });
+
+    return createdEdge;
+  }, [applyScenarioUpdate]);
+
+  const updateRoadEdgePoints = useCallback<ScenarioStoreValue['updateRoadEdgePoints']>((scenarioId, roadId, points) => {
+    let didUpdate = false;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const index = scenario.roadEdges.findIndex((edge) => edge.id === roadId);
+      if (index === -1) {
+        return scenario;
+      }
+
+      const nextPoints = sanitiseRoadPoints(points);
+      if (nextPoints.length < 2) {
+        return scenario;
+      }
+
+      const existing = scenario.roadEdges[index];
+      if (areRoadPointsEqual(existing.points, nextPoints)) {
+        return scenario;
+      }
+
+      const nextEdges = [...scenario.roadEdges];
+      nextEdges.splice(index, 1, {
+        ...existing,
+        points: nextPoints
+      });
+
+      didUpdate = true;
+
+      return {
+        ...scenario,
+        roadEdges: nextEdges
+      };
+    });
+
+    return didUpdate;
+  }, [applyScenarioUpdate]);
+
+  const setRoadEdgeType = useCallback<ScenarioStoreValue['setRoadEdgeType']>((scenarioId, roadId, type) => {
+    let didUpdate = false;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const index = scenario.roadEdges.findIndex((edge) => edge.id === roadId);
+      if (index === -1) {
+        return scenario;
+      }
+
+      const existing = scenario.roadEdges[index];
+      if (existing.type === type) {
+        return scenario;
+      }
+
+      const nextEdges = [...scenario.roadEdges];
+      nextEdges.splice(index, 1, {
+        ...existing,
+        type
+      });
+
+      didUpdate = true;
+
+      return {
+        ...scenario,
+        roadEdges: nextEdges
+      };
+    });
+
+    return didUpdate;
+  }, [applyScenarioUpdate]);
+
+  const removeRoadEdge = useCallback<ScenarioStoreValue['removeRoadEdge']>((scenarioId, roadId) => {
+    let didRemove = false;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const nextEdges = scenario.roadEdges.filter((edge) => edge.id !== roadId);
+      if (nextEdges.length === scenario.roadEdges.length) {
+        return scenario;
+      }
+
+      didRemove = true;
+
+      return {
+        ...scenario,
+        roadEdges: nextEdges
+      };
+    });
+
+    return didRemove;
+  }, [applyScenarioUpdate]);
+
   useEffect(() => {
     resetEditing();
   }, [activeScenarioId, resetEditing]);
@@ -1397,6 +1680,12 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     appendTrajectorySample,
     completeTrajectoryRecording,
     cancelTrajectoryRecording,
+    beginRoadDraft,
+    appendRoadDraftPoint,
+    updateRoadDraftPoint,
+    removeRoadDraftPoint,
+    completeRoadDraft,
+    cancelRoadDraft,
     pushHistoryEntry,
     undo,
     redo,
@@ -1415,6 +1704,12 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     appendTrajectorySample,
     completeTrajectoryRecording,
     cancelTrajectoryRecording,
+    beginRoadDraft,
+    appendRoadDraftPoint,
+    updateRoadDraftPoint,
+    removeRoadDraftPoint,
+    completeRoadDraft,
+    cancelRoadDraft,
     pushHistoryEntry,
     undo,
     redo,
@@ -1451,6 +1746,10 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     updateScenario,
     updateAgentStartPose,
     applyRecordedTrajectory,
+    addRoadEdge,
+    updateRoadEdgePoints,
+    setRoadEdgeType,
+    removeRoadEdge,
     editing: editingValue
   }), [
     scenarios,
@@ -1480,6 +1779,10 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     updateScenario,
     updateAgentStartPose,
     applyRecordedTrajectory,
+    addRoadEdge,
+    updateRoadEdgePoints,
+    setRoadEdgeType,
+    removeRoadEdge,
     editingValue
   ]);
 
