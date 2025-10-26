@@ -223,6 +223,35 @@ function computeBoundsFromTrajectories(agents: ScenarioAgent[]): ScenarioBounds 
   return ensureBoundsSpan({ minX, maxX, minY, maxY });
 }
 
+function computeBoundsFromRoadGeometry(edges: RoadEdge[]): ScenarioBounds | undefined {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  let hasPoints = false;
+
+  edges.forEach((edge) => {
+    edge.points.forEach((point) => {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+        return;
+      }
+
+      hasPoints = true;
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    });
+  });
+
+  if (!hasPoints) {
+    return undefined;
+  }
+
+  return ensureBoundsSpan({ minX, maxX, minY, maxY });
+}
+
 function buildFrames(frameCount: number, agents: ScenarioAgent[], frameIntervalMicros: number): ScenarioFrame[] {
   if (frameCount <= 0) {
     return [];
@@ -306,7 +335,7 @@ function parseWaymoScenario(raw: RawWaymoScenario): WaymoScenario {
     type: mapRoadType(road.type)
   }));
 
-  const bounds = computeBoundsFromTrajectories(agents);
+  const bounds = computeBoundsFromTrajectories(agents) ?? computeBoundsFromRoadGeometry(roadEdges);
   const frames = buildFrames(frameCount, agents, frameIntervalMicros);
 
   const durationSeconds = frameCount > 0 ? ((frameCount - 1) * frameIntervalMicros) / 1_000_000 : 0;

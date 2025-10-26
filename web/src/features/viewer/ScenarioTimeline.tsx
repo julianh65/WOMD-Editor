@@ -99,10 +99,20 @@ function ScenarioTimeline() {
     driveInputsLocked
   ]);
 
-  if (!activeScenario || frameCount === 0) {
+  if (!activeScenario) {
     return (
       <div className="timeline timeline--empty">
         <p>No scenario loaded.</p>
+      </div>
+    );
+  }
+
+  if (frameCount === 0) {
+    return (
+      <div className="timeline timeline--empty">
+        <p>
+          {activeScenario.metadata.name} has no frames yet. Add or record a trajectory to start playback.
+        </p>
       </div>
     );
   }

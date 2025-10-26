@@ -94,6 +94,7 @@ interface RoadSegmentHit {
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
+const INITIAL_ZOOM = 1.25;
 const DEFAULT_FRAME_INTERVAL_MICROS = 100_000;
 const DRIVE_SETTINGS_DEFAULT: DriveSettings = {
   maxSpeed: 38,
@@ -876,7 +877,7 @@ function ScenarioViewer() {
     roadHandle: undefined
   });
 
-  const [camera, setCamera] = useState<CameraState>({ zoom: 1, panX: 0, panY: 0, rotation: 0 });
+  const [camera, setCamera] = useState<CameraState>({ zoom: INITIAL_ZOOM, panX: 0, panY: 0, rotation: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [isDriveActive, setIsDriveActive] = useState(false);
   const driveSessionRef = useRef<DriveSession | null>(null);
@@ -1035,24 +1036,26 @@ function ScenarioViewer() {
 
   const getEntityAtCanvasXY = useCallback((canvasX: number, canvasY: number): EditingEntityRef | undefined => {
     const baseContext = baseTransformRef.current;
-    if (!baseContext || !activeScenario || !activeFrame) {
+    if (!baseContext || !activeScenario) {
       return undefined;
     }
 
     const dims: CanvasDims = { width: baseContext.width, height: baseContext.height };
     const worldPoint = canvasToWorld(canvasX, canvasY, baseContext.transform, camera, dims);
 
-    for (let index = activeFrame.agents.length - 1; index >= 0; index -= 1) {
-      const agentState = activeFrame.agents[index];
-      if (agentState.valid === false) {
-        continue;
-      }
-      const agentInfo = agentById.get(agentState.id);
-      if (!agentInfo) {
-        continue;
-      }
-      if (isPointInsideAgent(worldPoint, agentState, agentInfo)) {
-        return { kind: 'agent', id: agentState.id };
+    if (activeFrame) {
+      for (let index = activeFrame.agents.length - 1; index >= 0; index -= 1) {
+        const agentState = activeFrame.agents[index];
+        if (agentState.valid === false) {
+          continue;
+        }
+        const agentInfo = agentById.get(agentState.id);
+        if (!agentInfo) {
+          continue;
+        }
+        if (isPointInsideAgent(worldPoint, agentState, agentInfo)) {
+          return { kind: 'agent', id: agentState.id };
+        }
       }
     }
 
@@ -1648,7 +1651,7 @@ function ScenarioViewer() {
 
 
   useEffect(() => {
-    setCamera({ zoom: 1, panX: 0, panY: 0, rotation: 0 });
+    setCamera({ zoom: INITIAL_ZOOM, panX: 0, panY: 0, rotation: 0 });
   }, [activeScenario?.metadata.id, setCamera]);
 
   useEffect(() => {
@@ -1682,7 +1685,7 @@ function ScenarioViewer() {
     ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
     ctx.fillRect(0, 0, width, height);
 
-    if (!activeScenario || !activeFrame) {
+    if (!activeScenario) {
       baseTransformRef.current = null;
       return;
     }
@@ -1754,27 +1757,29 @@ function ScenarioViewer() {
       ctx.restore();
     }
 
-    activeFrame.agents.forEach((agentState) => {
-      const agentInfo = agentById.get(agentState.id);
-      const isDrivingAgent = isDriveActive && drivingAgentId === agentState.id;
-      let renderState = agentState;
-      if (isDrivingAgent) {
-        const session = driveSessionRef.current;
-        renderState = {
-          ...agentState,
-          x: session?.position.x ?? agentState.x,
-          y: session?.position.y ?? agentState.y,
-          heading: session?.heading ?? agentState.heading,
-          speed: session?.speed ?? agentState.speed
+    if (activeFrame) {
+      activeFrame.agents.forEach((agentState) => {
+        const agentInfo = agentById.get(agentState.id);
+        const isDrivingAgent = isDriveActive && drivingAgentId === agentState.id;
+        let renderState = agentState;
+        if (isDrivingAgent) {
+          const session = driveSessionRef.current;
+          renderState = {
+            ...agentState,
+            x: session?.position.x ?? agentState.x,
+            y: session?.position.y ?? agentState.y,
+            heading: session?.heading ?? agentState.heading,
+            speed: session?.speed ?? agentState.speed
+          };
+        }
+        const highlight = {
+          selected: renderState.id === selectedAgentId || isDrivingAgent,
+          hovered: renderState.id === hoveredAgentId && renderState.id !== selectedAgentId,
+          driving: isDrivingAgent
         };
-      }
-      const highlight = {
-        selected: renderState.id === selectedAgentId || isDrivingAgent,
-        hovered: renderState.id === hoveredAgentId && renderState.id !== selectedAgentId,
-        driving: isDrivingAgent
-      };
-      drawAgent(ctx, renderState, baseTransform, camera, dims, agentInfo, showAgentLabels, highlight);
-    });
+        drawAgent(ctx, renderState, baseTransform, camera, dims, agentInfo, showAgentLabels, highlight);
+      });
+    }
 
     if (selectedAnchorPoint && selectedAgentInfo && !isDriveActive) {
       drawTransformGizmo(ctx, baseTransform, camera, dims, selectedAnchorPoint);
@@ -2593,7 +2598,16 @@ function ScenarioViewer() {
             </div>
           )}
         </div>
-        {!activeFrame && <p className="viewer__overlay">Load or create a scenario to start exploring the scene.</p>}
+        {!activeScenario && (
+          <p className="viewer__overlay">
+            Load or create a scenario to start exploring the scene.
+          </p>
+        )}
+        {activeScenario && activeScenario.frames.length === 0 && (
+          <p className="viewer__overlay">
+            This scenario has no frames yet. Add an agent or record a trajectory to begin editing.
+          </p>
+        )}
       </div>
     </section>
   );
