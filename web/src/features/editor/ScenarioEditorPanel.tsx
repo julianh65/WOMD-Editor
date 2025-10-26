@@ -9,6 +9,19 @@ const ROAD_TYPE_OPTIONS = [
   { value: 'OTHER', label: 'Other' }
 ] as const;
 
+function normalizeScenarioName(name: string | undefined): string {
+  if (!name) {
+    return '';
+  }
+
+  let trimmed = name.trim();
+  if (trimmed.toLowerCase().endsWith('.json')) {
+    trimmed = trimmed.slice(0, -5).trim();
+  }
+
+  return trimmed;
+}
+
 function ScenarioEditorPanel() {
   const {
     activeScenario,
@@ -16,7 +29,6 @@ function ScenarioEditorPanel() {
     updateScenario,
     updateAgentStartPose,
     visibleTrajectoryIds,
-    toggleTrajectoryVisibility,
     showAllTrajectories,
     hideAllTrajectories,
     showAgentLabels,
@@ -43,19 +55,21 @@ function ScenarioEditorPanel() {
   const [startPoseDraft, setStartPoseDraft] = useState({ x: '', y: '', heading: '' });
 
   useEffect(() => {
-    setLocalName(activeScenario?.metadata.name ?? '');
+    setLocalName(normalizeScenarioName(activeScenario?.metadata.name) || '');
   }, [activeScenario?.metadata.name]);
 
   const handleNameChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     setLocalName(event.target.value);
   }, []);
 
+  const normalizedName = useMemo(() => normalizeScenarioName(localName), [localName]);
+
   const handleNameCommit = useCallback(() => {
     if (!activeScenario || !activeScenarioId) {
       return;
     }
 
-    const nextName = localName.trim();
+    const nextName = normalizedName;
     if (!nextName) {
       return;
     }
@@ -79,7 +93,7 @@ function ScenarioEditorPanel() {
       label: `Renamed scenario to ${nextName}`,
       timestamp: now
     });
-  }, [activeScenario, activeScenarioId, localName, updateScenario, pushHistoryEntry]);
+  }, [activeScenario, activeScenarioId, normalizedName, updateScenario, pushHistoryEntry]);
 
   const handleUndo = useCallback(() => {
     undo();
@@ -94,8 +108,9 @@ function ScenarioEditorPanel() {
       return;
     }
 
-    downloadScenarioAsJson(activeScenario, { fileName: activeScenario.metadata.name });
-  }, [activeScenario]);
+    const draftName = normalizedName || normalizeScenarioName(activeScenario.metadata.name) || 'Scenario';
+    downloadScenarioAsJson(activeScenario, { fileName: draftName });
+  }, [activeScenario, normalizedName]);
 
   const selectedEntity = editingState.selectedEntity;
   const rotationMode = editingState.rotationMode;
@@ -143,15 +158,6 @@ function ScenarioEditorPanel() {
     }
     return activeScenario.agents.every((agent) => visibleTrajectoryIds.has(agent.id));
   }, [activeScenario, visibleTrajectoryIds]);
-
-  const handleAgentSelect = useCallback((agentId: string) => {
-    if (selectedAgentId === agentId) {
-      clearSelection();
-      return;
-    }
-
-    selectEntity({ kind: 'agent', id: agentId });
-  }, [selectedAgentId, clearSelection, selectEntity]);
 
   const handleClearSelection = useCallback(() => {
     clearSelection();
@@ -312,11 +318,6 @@ function ScenarioEditorPanel() {
       return;
     }
 
-    const confirmed = window.confirm('Delete this road segment? This cannot be undone.');
-    if (!confirmed) {
-      return;
-    }
-
     const removed = removeRoadEdge(activeScenarioId, selectedRoadEdge.id);
     if (removed) {
       clearSelection();
@@ -373,16 +374,15 @@ function ScenarioEditorPanel() {
       <div className="editor-panel__controls">
         <label>
           Scenario Name
-          <div className="field-row">
+          <div className="field-row field-row--filename">
             <input
               type="text"
               placeholder="Scenario name"
-              value={localName}
+              value={normalizedName}
               onChange={handleNameChange}
+              onBlur={handleNameCommit}
             />
-            <button type="button" className="button button--secondary" onClick={handleNameCommit}>
-              Save
-            </button>
+            <span className="field-row__suffix">.json</span>
           </div>
         </label>
         <label className="toggle-row">
@@ -410,40 +410,7 @@ function ScenarioEditorPanel() {
             </button>
           </div>
         </div>
-        {agents.length === 0 ? (
-          <p className="editor-panel__placeholder">No agents loaded for this scenario.</p>
-        ) : (
-          <ul className="trajectory-list">
-            {agents.map((agent) => {
-              const isVisible = visibleTrajectoryIds.has(agent.id);
-              const label = agent.displayName || agent.id;
-              const badge = agent.isExpert ? ' (expert)' : '';
-              const isSelected = selectedAgentId === agent.id;
-              return (
-                <li key={agent.id} className={isSelected ? 'trajectory-list__item trajectory-list__item--selected' : 'trajectory-list__item'}>
-                  <div className="trajectory-list__item-row">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={isVisible}
-                        onChange={() => toggleTrajectoryVisibility(agent.id)}
-                      />
-                      <span>{label}{badge}</span>
-                    </label>
-                    <button
-                      type="button"
-                      className="button button--secondary"
-                      aria-pressed={isSelected}
-                      onClick={() => handleAgentSelect(agent.id)}
-                    >
-                      {isSelected ? 'Selected' : 'Select'}
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+        <p className="editor-panel__placeholder">Select agents directly in the viewer to edit their paths.</p>
       </div>
 
       <div className="editor-panel__section">
@@ -560,19 +527,22 @@ function ScenarioEditorPanel() {
                 <span>{selectedRoadEdge.points.length}</span>
               </li>
             </ul>
-            <label>
-              Road Type
-              <select value={selectedRoadEdge.type ?? 'OTHER'} onChange={handleRoadTypeChange}>
-                {ROAD_TYPE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button type="button" className="button button--secondary" onClick={handleDeleteRoadEdge}>
-              Delete Road Segment
-            </button>
+            <div className="selection-road-panel">
+              <label>
+                <span>Road Type</span>
+                <select value={selectedRoadEdge.type ?? 'OTHER'} onChange={handleRoadTypeChange}>
+                  {ROAD_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="selection-note">Segment type hints downstream renderers and exporters.</p>
+              <button type="button" className="button button--danger" onClick={handleDeleteRoadEdge}>
+                Delete Road Segment
+              </button>
+            </div>
           </>
         ) : (
           <p className="editor-panel__placeholder">Select an agent or road segment to edit.</p>

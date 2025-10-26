@@ -93,6 +93,28 @@ function createInitialEditingState(): EditingState {
   };
 }
 
+const MIN_BOUND_SPAN_METERS = 40;
+
+function ensureBoundsSpan(bounds: ScenarioBounds, minSpan = MIN_BOUND_SPAN_METERS): ScenarioBounds {
+  let { minX, maxX, minY, maxY } = bounds;
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+
+  if (spanX < minSpan) {
+    const centerX = (minX + maxX) / 2;
+    minX = centerX - minSpan / 2;
+    maxX = centerX + minSpan / 2;
+  }
+
+  if (spanY < minSpan) {
+    const centerY = (minY + maxY) / 2;
+    minY = centerY - minSpan / 2;
+    maxY = centerY + minSpan / 2;
+  }
+
+  return { minX, maxX, minY, maxY };
+}
+
 function computeBoundsFromAgents(agents: ScenarioAgent[]): ScenarioBounds | undefined {
   let minX = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
@@ -119,7 +141,7 @@ function computeBoundsFromAgents(agents: ScenarioAgent[]): ScenarioBounds | unde
     return undefined;
   }
 
-  return { minX, maxX, minY, maxY };
+  return ensureBoundsSpan({ minX, maxX, minY, maxY });
 }
 
 function normalizeAngle(angle: number): number {

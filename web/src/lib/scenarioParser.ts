@@ -55,6 +55,27 @@ interface RawWaymoScenario {
 }
 
 const FRAME_INTERVAL_MICROS = 100_000;
+const MIN_BOUND_SPAN_METERS = 40;
+
+function ensureBoundsSpan(bounds: ScenarioBounds, minSpan = MIN_BOUND_SPAN_METERS): ScenarioBounds {
+  let { minX, maxX, minY, maxY } = bounds;
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+
+  if (spanX < minSpan) {
+    const centerX = (minX + maxX) / 2;
+    minX = centerX - minSpan / 2;
+    maxX = centerX + minSpan / 2;
+  }
+
+  if (spanY < minSpan) {
+    const centerY = (minY + maxY) / 2;
+    minY = centerY - minSpan / 2;
+    maxY = centerY + minSpan / 2;
+  }
+
+  return { minX, maxX, minY, maxY };
+}
 
 const typeMap: Record<string, AgentType> = {
   vehicle: 'VEHICLE',
@@ -199,7 +220,7 @@ function computeBoundsFromTrajectories(agents: ScenarioAgent[]): ScenarioBounds 
     return undefined;
   }
 
-  return { minX, maxX, minY, maxY };
+  return ensureBoundsSpan({ minX, maxX, minY, maxY });
 }
 
 function buildFrames(frameCount: number, agents: ScenarioAgent[], frameIntervalMicros: number): ScenarioFrame[] {

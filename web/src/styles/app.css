@@ -534,6 +534,16 @@
   color: inherit;
 }
 
+.field-row--filename {
+  align-items: center;
+}
+
+.field-row__suffix {
+  font-size: 0.9rem;
+  padding: 0.55rem 0.8rem;
+  color: #94a3b8;
+}
+
 .editor-panel__placeholder {
   font-size: 0.9rem;
   color: #94a3b8;
@@ -624,6 +634,39 @@
   padding: 0.15rem 0.35rem;
   background: rgba(15, 23, 42, 0.8);
   border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.selection-road-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 0.85rem;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  background: rgba(30, 41, 59, 0.65);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.selection-road-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: #cbd5f5;
+}
+
+.selection-road-panel select {
+  border-radius: 0.5rem;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  padding: 0.45rem 0.6rem;
+  background: rgba(15, 23, 42, 0.85);
+  color: #e2e8f0;
+}
+
+.selection-note {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin: 0;
 }
 
 .trajectory-list {
