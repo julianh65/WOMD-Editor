@@ -562,6 +562,29 @@
   color: #e2e8f0;
 }
 
+.selection-rotation-mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.selection-rotation-mode__label {
+  font-size: 0.85rem;
+  color: #cbd5f5;
+}
+
+.selection-rotation-mode__buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.selection-rotation-mode__buttons .button {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+}
+
 .selection-summary {
   list-style: none;
   margin: 0;

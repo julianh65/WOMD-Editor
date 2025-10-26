@@ -54,6 +54,7 @@ interface EditingHistoryState {
 export interface EditingState {
   mode: EditingMode;
   activeTool: EditingTool;
+  rotationMode: 'path' | 'pose';
   hoveredEntity?: EditingEntityRef;
   selectedEntity?: EditingEntityRef;
   isRecording: boolean;
@@ -65,6 +66,7 @@ function createInitialEditingState(): EditingState {
   return {
     mode: 'trajectory',
     activeTool: 'trajectory-edit',
+    rotationMode: 'path',
     hoveredEntity: undefined,
     selectedEntity: undefined,
     isRecording: false,
@@ -105,6 +107,64 @@ function computeBoundsFromAgents(agents: ScenarioAgent[]): ScenarioBounds | unde
   return { minX, maxX, minY, maxY };
 }
 
+function normalizeAngle(angle: number): number {
+  let next = angle;
+  while (next <= -Math.PI) {
+    next += Math.PI * 2;
+  }
+  while (next > Math.PI) {
+    next -= Math.PI * 2;
+  }
+  return next;
+}
+
+const REVERSAL_HEADING_THRESHOLD = Math.PI - Math.PI / 18;
+
+function deriveHeadingFromPoints(prevPoint: TrajectoryPoint | undefined, currentPoint: TrajectoryPoint): number | undefined {
+  if (!prevPoint) {
+    return undefined;
+  }
+
+  const dx = currentPoint.x - prevPoint.x;
+  const dy = currentPoint.y - prevPoint.y;
+  if (Math.abs(dx) < 1e-4 && Math.abs(dy) < 1e-4) {
+    return undefined;
+  }
+
+  return Math.atan2(dy, dx);
+}
+
+function resolveStableHeading(
+  point: TrajectoryPoint,
+  previousHeading: number | undefined,
+  previousPoint: TrajectoryPoint | undefined
+): number | undefined {
+  const baseHeading = typeof point.heading === 'number'
+    ? point.heading
+    : deriveHeadingFromPoints(previousPoint, point);
+
+  if (baseHeading === undefined) {
+    return previousHeading;
+  }
+
+  const normalizedCandidate = normalizeAngle(baseHeading);
+
+  if (previousHeading === undefined) {
+    return normalizedCandidate;
+  }
+
+  const delta = normalizeAngle(normalizedCandidate - previousHeading);
+  if (Math.abs(delta) > REVERSAL_HEADING_THRESHOLD) {
+    const flipped = normalizeAngle(normalizedCandidate - Math.PI * Math.sign(delta || 1));
+    const flippedDelta = normalizeAngle(flipped - previousHeading);
+    if (Math.abs(flippedDelta) < Math.abs(delta)) {
+      return flipped;
+    }
+  }
+
+  return normalizeAngle(previousHeading + delta);
+}
+
 function buildFramesFromAgents(
   agents: ScenarioAgent[],
   frameIntervalMicros: number,
@@ -136,7 +196,11 @@ function buildFramesFromAgents(
 
   agents.forEach((agent) => {
     const { id, type, dimensions } = agent;
-    agent.trajectory.forEach((point) => {
+    const orderedPoints = [...agent.trajectory].sort((a, b) => (a.frameIndex ?? Number.POSITIVE_INFINITY) - (b.frameIndex ?? Number.POSITIVE_INFINITY));
+    let previousHeading: number | undefined;
+    let previousPoint: TrajectoryPoint | undefined;
+
+    orderedPoints.forEach((point) => {
       if (point.frameIndex === undefined) {
         return;
       }
@@ -146,13 +210,24 @@ function buildFramesFromAgents(
         return;
       }
 
+      const headingForFrame = resolveStableHeading(point, previousHeading, previousPoint);
+      if (headingForFrame !== undefined) {
+        previousHeading = headingForFrame;
+      } else if (typeof point.heading === 'number') {
+        previousHeading = normalizeAngle(point.heading);
+      }
+
+      if (point.valid !== false) {
+        previousPoint = point;
+      }
+
       frame.agents.push({
         id,
         type,
         x: point.x,
         y: point.y,
         z: point.z,
-        heading: point.heading,
+        heading: headingForFrame ?? point.heading,
         width: dimensions?.width,
         length: dimensions?.length,
         height: dimensions?.height,
@@ -250,6 +325,41 @@ function transformAgentTrajectory(
       heading: nextHeading,
       velocityX: nextVelocityX,
       velocityY: nextVelocityY
+    };
+  });
+
+  return {
+    ...agent,
+    trajectory: updatedTrajectory
+  };
+}
+
+function applyPoseOnlyHeading(
+  agent: ScenarioAgent,
+  anchorHeading: number,
+  targetHeading: number
+): ScenarioAgent {
+  const deltaHeading = normalizeAngle(targetHeading - anchorHeading);
+  if (Math.abs(deltaHeading) < 1e-6) {
+    return agent;
+  }
+
+  const anchorIndex = agent.trajectory.findIndex((point) => point.valid !== false);
+  const safeAnchorIndex = anchorIndex === -1 ? 0 : anchorIndex;
+
+  const updatedTrajectory = agent.trajectory.map((point, index) => {
+    let nextHeading = point.heading;
+    if (typeof point.heading === 'number') {
+      nextHeading = normalizeAngle(point.heading + deltaHeading);
+    }
+
+    if (index === safeAnchorIndex) {
+      nextHeading = normalizeAngle(targetHeading);
+    }
+
+    return {
+      ...point,
+      heading: nextHeading
     };
   });
 
@@ -413,6 +523,7 @@ export interface EditingStoreValue {
   state: EditingState;
   setMode: (mode: EditingMode) => void;
   setTool: (tool: EditingTool) => void;
+  setRotationMode: (mode: 'path' | 'pose') => void;
   hoverEntity: (ref?: EditingEntityRef) => void;
   selectEntity: (ref?: EditingEntityRef) => void;
   clearSelection: () => void;
@@ -457,7 +568,8 @@ interface ScenarioStoreValue {
   updateAgentStartPose: (
     scenarioId: string,
     agentId: string,
-    next: { x?: number; y?: number; headingRadians?: number }
+    next: { x?: number; y?: number; headingRadians?: number },
+    options?: { rotationMode?: 'path' | 'pose' }
   ) => void;
   applyRecordedTrajectory: (
     scenarioId: string,
@@ -1011,6 +1123,13 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     }));
   }, []);
 
+  const setRotationMode = useCallback((mode: 'path' | 'pose') => {
+    setEditingState((prev) => ({
+      ...prev,
+      rotationMode: mode
+    }));
+  }, []);
+
   const hoverEntity = useCallback((ref?: EditingEntityRef) => {
     setEditingState((prev) => ({
       ...prev,
@@ -1184,7 +1303,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     return entry;
   }, [activeScenarioId, redoScenarioState]);
 
-  const updateAgentStartPose = useCallback<ScenarioStoreValue['updateAgentStartPose']>((scenarioId, agentId, next) => {
+  const updateAgentStartPose = useCallback<ScenarioStoreValue['updateAgentStartPose']>((scenarioId, agentId, next, options) => {
+    const rotationMode = options?.rotationMode ?? 'path';
+
     applyScenarioUpdate(scenarioId, (scenario) => {
       const agent = scenario.agents.find((item) => item.id === agentId);
       if (!agent) {
@@ -1196,13 +1317,33 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
         return scenario;
       }
 
-      const targetX = next.x ?? anchorPoint.x;
-      const targetY = next.y ?? anchorPoint.y;
-      const targetHeading = next.headingRadians ?? anchorPoint.heading ?? 0;
-      const deltaHeading = targetHeading - (anchorPoint.heading ?? 0);
+      const anchorHeading = anchorPoint.heading ?? 0;
+      const targetX = typeof next.x === 'number' ? next.x : anchorPoint.x;
+      const targetY = typeof next.y === 'number' ? next.y : anchorPoint.y;
+      const hasHeadingUpdate = typeof next.headingRadians === 'number';
+      const targetHeading = hasHeadingUpdate ? (next.headingRadians as number) : anchorHeading;
+      const deltaHeadingForPath = rotationMode === 'path' && hasHeadingUpdate
+        ? targetHeading - anchorHeading
+        : 0;
 
-      const updatedAgent = transformAgentTrajectory(agent, anchorPoint, targetX, targetY, deltaHeading);
-      const nextAgents = scenario.agents.map((item) => (item.id === agentId ? updatedAgent : item));
+      const requiresTransform =
+        Math.abs(targetX - anchorPoint.x) > 1e-6
+        || Math.abs(targetY - anchorPoint.y) > 1e-6
+        || Math.abs(deltaHeadingForPath) > 1e-6;
+
+      let workingAgent = requiresTransform
+        ? transformAgentTrajectory(agent, anchorPoint, targetX, targetY, deltaHeadingForPath)
+        : agent;
+
+      if (rotationMode === 'pose' && hasHeadingUpdate) {
+        workingAgent = applyPoseOnlyHeading(workingAgent, anchorHeading, targetHeading);
+      }
+
+      if (workingAgent === agent) {
+        return scenario;
+      }
+
+      const nextAgents = scenario.agents.map((item) => (item.id === agentId ? workingAgent : item));
       return withScenarioRebuild(scenario, nextAgents);
     });
   }, [applyScenarioUpdate]);
@@ -1248,6 +1389,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     state: editingState,
     setMode: setEditingMode,
     setTool: setEditingTool,
+    setRotationMode,
     hoverEntity,
     selectEntity,
     clearSelection,
@@ -1265,6 +1407,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     editingState,
     setEditingMode,
     setEditingTool,
+    setRotationMode,
     hoverEntity,
     selectEntity,
     clearSelection,

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import { downloadScenarioAsJson } from '@/lib/scenarioExporter';
 import { useScenarioStore } from '@/state/scenarioStore';
 
 function ScenarioEditorPanel() {
@@ -26,7 +27,8 @@ function ScenarioEditorPanel() {
     undo,
     redo,
     canUndo,
-    canRedo
+    canRedo,
+    setRotationMode
   } = editing;
   const [localName, setLocalName] = useState('');
   const [startPoseDraft, setStartPoseDraft] = useState({ x: '', y: '', heading: '' });
@@ -83,17 +85,11 @@ function ScenarioEditorPanel() {
       return;
     }
 
-    const { raw: _raw, ...exportableScenario } = activeScenario;
-    const blob = new Blob([JSON.stringify(exportableScenario, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `${activeScenario.metadata.name || 'scenario'}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadScenarioAsJson(activeScenario, { fileName: activeScenario.metadata.name });
   }, [activeScenario]);
 
   const selectedEntity = editingState.selectedEntity;
+  const rotationMode = editingState.rotationMode;
   const selectedAgentId = selectedEntity?.kind === 'agent' ? selectedEntity.id : undefined;
   const agents = useMemo(() => activeScenario?.agents ?? [], [activeScenario?.agents]);
   const selectedAgent = useMemo(
@@ -221,11 +217,16 @@ function ScenarioEditorPanel() {
       return;
     }
 
-    updateAgentStartPose(activeScenarioId, selectedAgent.id, {
-      x: nextX,
-      y: nextY,
-      headingRadians: nextHeadingRad
-    });
+    updateAgentStartPose(
+      activeScenarioId,
+      selectedAgent.id,
+      {
+        x: nextX,
+        y: nextY,
+        headingRadians: nextHeadingRad
+      },
+      { rotationMode }
+    );
 
     const now = Date.now();
     pushHistoryEntry({
@@ -305,9 +306,8 @@ function ScenarioEditorPanel() {
             type="button"
             className="button"
             onClick={handleExport}
-            title="Export is still a work in progress"
           >
-            Export JSON (doesn't work yet)
+            Export JSON
           </button>
         </div>
       </div>
@@ -462,6 +462,25 @@ function ScenarioEditorPanel() {
                   placeholder="0"
                 />
               </label>
+            </div>
+            <div className="selection-rotation-mode">
+              <span className="selection-rotation-mode__label">Rotation Mode</span>
+              <div className="selection-rotation-mode__buttons">
+                <button
+                  type="button"
+                  className={rotationMode === 'path' ? 'button button--primary' : 'button button--secondary'}
+                  onClick={() => setRotationMode('path')}
+                >
+                  Rotate Path
+                </button>
+                <button
+                  type="button"
+                  className={rotationMode === 'pose' ? 'button button--primary' : 'button button--secondary'}
+                  onClick={() => setRotationMode('pose')}
+                >
+                  Pose Only
+                </button>
+              </div>
             </div>
             <button type="button" className="button button--secondary" onClick={commitStartPose}>
               Apply Start Pose

@@ -697,6 +697,7 @@ function ScenarioViewer() {
     completeTrajectoryRecording,
     pushHistoryEntry
   } = editing;
+  const rotationMode = editingState.rotationMode;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const baseTransformRef = useRef<BaseTransformContext | null>(null);
   const dragStateRef = useRef<DragState>({
@@ -1714,7 +1715,7 @@ function ScenarioViewer() {
         const nextHeading = normalizeAngle(gizmo.startHeading + deltaAngle);
         updateAgentStartPose(activeScenarioId, selectedAgentId, {
           headingRadians: nextHeading
-        });
+        }, { rotationMode });
         state.gizmo = {
           ...gizmo,
           changed: true
@@ -1755,7 +1756,8 @@ function ScenarioViewer() {
     updateHoverFromEvent,
     activeScenarioId,
     selectedAgentId,
-    updateAgentStartPose
+    updateAgentStartPose,
+    rotationMode
   ]);
 
   const releasePointerCapture = useCallback((pointerId: number) => {

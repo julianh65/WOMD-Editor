@@ -10,6 +10,11 @@ Deliver a visual, browser-based scenario authoring environment for the Waymo Ope
 - Timeline scrubber exposes frame index, play/pause, speed control, and keyboard shortcut (`space`).
 - Scenario sidebar + details panel manage naming, export, trajectory visibility, and label toggle.
 
+### Recent Wins (Editing Sprint Week 4)
+- JSON export now produces deterministic payloads (bounds, agents, road geometry, frames) with sanitized filenames, so round-tripping scenarios “just works”.
+- Viewer headings are smoothed during frame rebuilds to keep vehicle orientation stable when reversing or driving multi-point turns.
+- Transform gizmo + sidebar offer a `Rotate Path` / `Pose Only` toggle, letting editors either spin the entire trajectory or simply realign the start pose as needed.
+
 ## Editing Vision
 1. **Trajectory Editing** – Select an agent, inspect its path, insert/delete/move control points with smooth interpolation, adjust headings/speeds per frame.
 2. **Agent Lifecycle** – Add or duplicate agents, configure dimensions/type/expert flag, define spawn & despawn frames, copy/paste trajectories across scenarios.
@@ -51,7 +56,7 @@ Deliver a visual, browser-based scenario authoring environment for the Waymo Ope
 
 ## Known Challenges / Open Questions
 - How to handle high-frequency trajectories efficiently (interpolation, performance) when manipulating individual frames.
-- UX for vehicle orientation when editing (heading vs. spline tangents).
+- Surface intent for reversing vs. forward motion in exports (e.g., negative speed vs. heading cues) without bloating the payload.
 - Whether to support multi-agent editing simultaneously and collision detection feedback.
 - Strategy for persisting undo/redo history and diffing for export.
 
@@ -62,13 +67,14 @@ Deliver a visual, browser-based scenario authoring environment for the Waymo Ope
 
 Other todos:
 1. Add ability to set episode length manually
-2. Add some instructions / documentation
+2. Add some instructions / documentation (capture current shortcuts + rotation modes)
 3. Make it straight export as .bin
-4. after recording a driving path we need the initial angle of the car to be facing the direction that we go for both record and drive
+4. Capture reversing intent in exports if downstream consumers need explicit `reverse` flag
 
 Fixes
-1. When rotating an agent if it has a path we should probably keep that path locked so that the path rotates as well
+1. Start-pose rotation now supports two modes (Rotate Path vs Pose Only) so editors can either transform the entire spline or keep it locked.
+2. Playback heading indicator no longer flips during reversing; derived frame headings are normalized with continuity smoothing.
 
 ---
-Last updated: Transform gizmo, undo stack, and UI polish (Editing sprint, Week 3)._
+Last updated: JSON export, heading smoothing, rotation modes (Editing sprint, Week 4).
 ---

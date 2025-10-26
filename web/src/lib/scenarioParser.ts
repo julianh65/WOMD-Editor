@@ -89,6 +89,20 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function isScenarioBounds(value: unknown): value is ScenarioBounds {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  const candidate = value as Partial<ScenarioBounds>;
+  return (
+    typeof candidate.minX === 'number'
+    && typeof candidate.maxX === 'number'
+    && typeof candidate.minY === 'number'
+    && typeof candidate.maxY === 'number'
+  );
+}
+
 function isWaymoFormattedScenario(value: unknown): value is RawWaymoScenario {
   if (!isObject(value)) {
     return false;
@@ -316,13 +330,14 @@ export function parseScenario(json: unknown): WaymoScenario {
   const agents = Array.isArray(candidate.agents) ? (candidate.agents as WaymoScenario['agents']) : [];
   const roadEdges = Array.isArray(candidate.roadEdges) ? (candidate.roadEdges as WaymoScenario['roadEdges']) : [];
   const frames = Array.isArray(candidate.frames) ? (candidate.frames as ScenarioFrame[]) : [];
+  const bounds = isScenarioBounds((candidate as WaymoScenario).bounds) ? (candidate as WaymoScenario).bounds : undefined;
 
   return {
     metadata,
     agents,
     roadEdges,
     frames,
-    bounds: undefined,
+    bounds,
     raw: json
   };
 }
