@@ -866,6 +866,7 @@ function ScenarioViewer() {
   const rotationMode = editingState.rotationMode;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const baseTransformRef = useRef<BaseTransformContext | null>(null);
+  const lastScenarioIdRef = useRef<string | undefined>(undefined);
   const dragStateRef = useRef<DragState>({
     active: false,
     pointerId: null,
@@ -1685,14 +1686,70 @@ function ScenarioViewer() {
     ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
     ctx.fillRect(0, 0, width, height);
 
+    const prevBaseContext = baseTransformRef.current;
+    const previousScenarioId = lastScenarioIdRef.current;
+    const currentScenarioId = activeScenario?.metadata.id;
+
     if (!activeScenario) {
       baseTransformRef.current = null;
+      lastScenarioIdRef.current = currentScenarioId;
       return;
     }
 
     const dims: CanvasDims = { width, height };
     const baseTransform = computeTransform(activeScenario.bounds, width, height);
     baseTransformRef.current = { transform: baseTransform, width, height };
+
+    if (
+      prevBaseContext
+      && previousScenarioId
+      && previousScenarioId === currentScenarioId
+    ) {
+      const prevTransform = prevBaseContext.transform;
+      const prevDims: CanvasDims = { width: prevBaseContext.width, height: prevBaseContext.height };
+      const resizeChanged = prevBaseContext.width !== width || prevBaseContext.height !== height;
+      const transformChanged =
+        Math.abs(prevTransform.scale - baseTransform.scale) > 1e-6
+        || Math.abs(prevTransform.offsetX - baseTransform.offsetX) > 1e-6
+        || Math.abs(prevTransform.offsetY - baseTransform.offsetY) > 1e-6
+        || resizeChanged;
+
+      if (transformChanged) {
+        const focusWorld = canvasToWorld(prevDims.width / 2, prevDims.height / 2, prevTransform, camera, prevDims);
+        const targetScale = prevTransform.scale * camera.zoom;
+        const nextScale = baseTransform.scale;
+        const rawZoom = nextScale > 1e-9 ? targetScale / nextScale : camera.zoom;
+        const clampedZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, rawZoom));
+
+        const newDims: CanvasDims = { width, height };
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const anchor = worldToAnchor(focusWorld, baseTransform, newDims);
+        const dx = anchor.x - centerX;
+        const dy = anchor.y - centerY;
+        const cos = Math.cos(camera.rotation);
+        const sin = Math.sin(camera.rotation);
+        const rotatedX = dx * cos - dy * sin;
+        const rotatedY = dx * sin + dy * cos;
+        const nextPanX = -(rotatedX * clampedZoom);
+        const nextPanY = -(rotatedY * clampedZoom);
+
+        const zoomDelta = Math.abs(clampedZoom - camera.zoom);
+        const panXDelta = Math.abs(nextPanX - camera.panX);
+        const panYDelta = Math.abs(nextPanY - camera.panY);
+
+        if (zoomDelta > 1e-4 || panXDelta > 0.5 || panYDelta > 0.5) {
+          setCamera((prevCamera) => ({
+            zoom: clampedZoom,
+            panX: nextPanX,
+            panY: nextPanY,
+            rotation: prevCamera.rotation
+          }));
+        }
+      }
+    }
+
+    lastScenarioIdRef.current = currentScenarioId;
 
     drawRoadEdges(ctx, activeScenario.roadEdges, baseTransform, camera, dims, {
       selectedId: selectedRoadId,
@@ -1791,6 +1848,7 @@ function ScenarioViewer() {
     trajectoryAgents,
     agentById,
     camera,
+    setCamera,
     selectedAgentId,
     hoveredAgentId,
     showAgentLabels,
