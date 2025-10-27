@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { downloadScenarioAsJson } from '@/lib/scenarioExporter';
 import { useScenarioStore } from '@/state/scenarioStore';
+import type { AgentType } from '@/types/scenario';
 
 const ROAD_TYPE_OPTIONS = [
   { value: 'ROAD_EDGE', label: 'Road Edge' },
@@ -8,6 +9,20 @@ const ROAD_TYPE_OPTIONS = [
   { value: 'CROSSWALK', label: 'Crosswalk' },
   { value: 'OTHER', label: 'Other' }
 ] as const;
+
+const AGENT_TYPE_OPTIONS: Array<{ value: AgentType; label: string }> = [
+  { value: 'VEHICLE', label: 'Vehicle' },
+  { value: 'PEDESTRIAN', label: 'Pedestrian' },
+  { value: 'CYCLIST', label: 'Cyclist' },
+  { value: 'OTHER', label: 'Other' }
+];
+
+const DEFAULT_AGENT_DIMENSIONS: Record<AgentType, { length: number; width: number; height?: number }> = {
+  VEHICLE: { length: 4.5, width: 2.0, height: 1.6 },
+  PEDESTRIAN: { length: 0.8, width: 0.8, height: 1.8 },
+  CYCLIST: { length: 1.8, width: 0.6, height: 1.6 },
+  OTHER: { length: 2.0, width: 1.0, height: 1.5 }
+};
 
 function normalizeScenarioName(name: string | undefined): string {
   if (!name) {
@@ -22,12 +37,20 @@ function normalizeScenarioName(name: string | undefined): string {
   return trimmed;
 }
 
+type AgentDetailsDraft = {
+  type: AgentType;
+  length: string;
+  width: string;
+  height: string;
+};
+
 function ScenarioEditorPanel() {
   const {
     activeScenario,
     activeScenarioId,
     updateScenario,
     updateAgentStartPose,
+    updateAgentAttributes,
     visibleTrajectoryIds,
     showAllTrajectories,
     hideAllTrajectories,
@@ -53,6 +76,12 @@ function ScenarioEditorPanel() {
   } = editing;
   const [localName, setLocalName] = useState('');
   const [startPoseDraft, setStartPoseDraft] = useState({ x: '', y: '', heading: '' });
+  const [agentDetailsDraft, setAgentDetailsDraft] = useState<AgentDetailsDraft>({
+    type: 'VEHICLE',
+    length: '',
+    width: '',
+    height: ''
+  });
 
   useEffect(() => {
     setLocalName(normalizeScenarioName(activeScenario?.metadata.name) || '');
@@ -130,12 +159,25 @@ function ScenarioEditorPanel() {
   useEffect(() => {
     if (!selectedAgent) {
       setStartPoseDraft({ x: '', y: '', heading: '' });
+      setAgentDetailsDraft({
+        type: 'VEHICLE',
+        length: '',
+        width: '',
+        height: ''
+      });
       return;
     }
 
     const anchorPoint = selectedAgent.trajectory.find((point) => point.valid !== false) ?? selectedAgent.trajectory[0];
     if (!anchorPoint) {
       setStartPoseDraft({ x: '', y: '', heading: '' });
+      const fallbackDims = DEFAULT_AGENT_DIMENSIONS[selectedAgent.type];
+      setAgentDetailsDraft({
+        type: selectedAgent.type,
+        length: fallbackDims.length.toFixed(2),
+        width: fallbackDims.width.toFixed(2),
+        height: fallbackDims.height !== undefined ? fallbackDims.height.toFixed(2) : ''
+      });
       return;
     }
 
@@ -147,6 +189,14 @@ function ScenarioEditorPanel() {
       x: anchorPoint.x.toFixed(2),
       y: anchorPoint.y.toFixed(2),
       heading: headingDeg.toFixed(1)
+    });
+
+    const baseDimensions = selectedAgent.dimensions ?? DEFAULT_AGENT_DIMENSIONS[selectedAgent.type];
+    setAgentDetailsDraft({
+      type: selectedAgent.type,
+      length: baseDimensions.length.toFixed(2),
+      width: baseDimensions.width.toFixed(2),
+      height: baseDimensions.height !== undefined ? baseDimensions.height.toFixed(2) : ''
     });
   }, [selectedAgent]);
   const allVisible = useMemo(() => {
@@ -165,6 +215,26 @@ function ScenarioEditorPanel() {
 
   const handleStartPoseChange = useCallback((field: 'x' | 'y' | 'heading', value: string) => {
     setStartPoseDraft((prev) => ({ ...prev, [field]: value }));
+  }, []);
+
+  const handleAgentTypeDraftChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const nextType = event.target.value as AgentType;
+    setAgentDetailsDraft((prev) => {
+      if (prev.type === nextType) {
+        return prev;
+      }
+      const defaults = DEFAULT_AGENT_DIMENSIONS[nextType];
+      return {
+        type: nextType,
+        length: defaults.length.toFixed(2),
+        width: defaults.width.toFixed(2),
+        height: defaults.height !== undefined ? defaults.height.toFixed(2) : ''
+      };
+    });
+  }, []);
+
+  const handleAgentDimensionChange = useCallback((field: 'length' | 'width' | 'height', value: string) => {
+    setAgentDetailsDraft((prev) => ({ ...prev, [field]: value }));
   }, []);
 
   const handleDeleteAllAgents = useCallback(() => {
@@ -265,6 +335,84 @@ function ScenarioEditorPanel() {
     updateAgentStartPose,
     pushHistoryEntry
   ]);
+
+  const commitAgentDetails = useCallback(() => {
+    if (!activeScenarioId || !selectedAgent) {
+      return;
+    }
+
+    const nextType = agentDetailsDraft.type;
+    const defaultsForNextType = DEFAULT_AGENT_DIMENSIONS[nextType];
+    const parsedLength = Number.parseFloat(agentDetailsDraft.length);
+    const parsedWidth = Number.parseFloat(agentDetailsDraft.width);
+    const parsedHeight = Number.parseFloat(agentDetailsDraft.height);
+    const safeLength = Number.isFinite(parsedLength) && parsedLength > 0 ? parsedLength : defaultsForNextType.length;
+    const safeWidth = Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : defaultsForNextType.width;
+    const heightInput = agentDetailsDraft.height.trim();
+    let safeHeight: number | null;
+    if (heightInput.length === 0) {
+      safeHeight = defaultsForNextType.height ?? null;
+    } else if (Number.isFinite(parsedHeight) && parsedHeight > 0) {
+      safeHeight = parsedHeight;
+    } else if (defaultsForNextType.height !== undefined) {
+      safeHeight = defaultsForNextType.height;
+    } else {
+      safeHeight = null;
+    }
+
+    const epsilon = 1e-4;
+    const prevDims = selectedAgent.dimensions;
+    const prevHeight = typeof prevDims?.height === 'number' ? prevDims.height : null;
+    const nextHeight = safeHeight ?? null;
+    const dimsChanged = !prevDims
+      ? true
+      : Math.abs(prevDims.length - safeLength) > epsilon
+        || Math.abs(prevDims.width - safeWidth) > epsilon
+        || (
+          (prevHeight === null && nextHeight !== null)
+          || (prevHeight !== null && nextHeight === null)
+          || (prevHeight !== null && nextHeight !== null && Math.abs(prevHeight - nextHeight) > epsilon)
+        );
+    const typeChanged = selectedAgent.type !== nextType;
+
+    if (!typeChanged && !dimsChanged) {
+      return;
+    }
+
+    const updated = updateAgentAttributes(activeScenarioId, selectedAgent.id, {
+      type: nextType,
+      dimensions: {
+        length: safeLength,
+        width: safeWidth,
+        height: safeHeight
+      }
+    });
+
+    if (updated) {
+      const name = selectedAgent.displayName ?? selectedAgent.id;
+      const parts: string[] = [];
+      if (typeChanged) {
+        parts.push(`type → ${nextType}`);
+      }
+      if (dimsChanged) {
+        parts.push('dimensions');
+      }
+      const detail = parts.length > 0 ? parts.join(' & ') : 'attributes';
+      const now = Date.now();
+      pushHistoryEntry({
+        id: `agent-attrs-${selectedAgent.id}-${now.toString(36)}`,
+        label: `Updated ${name} ${detail}`,
+        timestamp: now
+      });
+    }
+  }, [activeScenarioId, agentDetailsDraft, selectedAgent, updateAgentAttributes, pushHistoryEntry]);
+
+  const handleAgentDimensionKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitAgentDetails();
+    }
+  }, [commitAgentDetails]);
 
   const handleToggleExpert = useCallback(() => {
     if (!activeScenarioId || !selectedAgent) {
@@ -450,6 +598,57 @@ function ScenarioEditorPanel() {
                 onChange={handleToggleExpert}
               />
             </label>
+            <div className="selection-edit-grid">
+              <label>
+                Agent Type
+                <select value={agentDetailsDraft.type} onChange={handleAgentTypeDraftChange}>
+                  {AGENT_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Length (m)
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.05"
+                  value={agentDetailsDraft.length}
+                  onChange={(event) => handleAgentDimensionChange('length', event.target.value)}
+                  onKeyDown={handleAgentDimensionKeyDown}
+                  placeholder="0.00"
+                />
+              </label>
+              <label>
+                Width (m)
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.05"
+                  value={agentDetailsDraft.width}
+                  onChange={(event) => handleAgentDimensionChange('width', event.target.value)}
+                  onKeyDown={handleAgentDimensionKeyDown}
+                  placeholder="0.00"
+                />
+              </label>
+              <label>
+                Height (m)
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.05"
+                  value={agentDetailsDraft.height}
+                  onChange={(event) => handleAgentDimensionChange('height', event.target.value)}
+                  onKeyDown={handleAgentDimensionKeyDown}
+                  placeholder="0.00"
+                />
+              </label>
+            </div>
+            <button type="button" className="button button--secondary" onClick={commitAgentDetails}>
+              Apply Agent Details
+            </button>
             <div className="selection-edit-grid">
               <label>
                 Start X (m)

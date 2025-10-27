@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { parseScenario } from '@/lib/scenarioParser';
 import {
+  AgentType,
   RoadEdge,
   ScenarioAgent,
   ScenarioBounds,
@@ -350,6 +351,39 @@ function areRoadPointsEqual(a: RoadDraftPoint[], b: RoadDraftPoint[]) {
   return true;
 }
 
+const DEFAULT_AGENT_DIMENSIONS: Record<AgentType, { length: number; width: number; height?: number }> = {
+  VEHICLE: { length: 4.5, width: 2.0, height: 1.6 },
+  PEDESTRIAN: { length: 0.8, width: 0.8, height: 1.8 },
+  CYCLIST: { length: 1.8, width: 0.6, height: 1.6 },
+  OTHER: { length: 2.0, width: 1.0, height: 1.5 }
+};
+
+function areAgentDimensionsEqual(
+  a: ScenarioAgent['dimensions'] | undefined,
+  b: ScenarioAgent['dimensions'] | undefined
+): boolean {
+  if (!a && !b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+
+  const epsilon = 1e-6;
+  const heightA = typeof a.height === 'number' ? a.height : undefined;
+  const heightB = typeof b.height === 'number' ? b.height : undefined;
+
+  const heightEqual = heightA === undefined && heightB === undefined
+    ? true
+    : heightA !== undefined && heightB !== undefined && Math.abs(heightA - heightB) < epsilon;
+
+  return (
+    Math.abs(a.length - b.length) < epsilon
+    && Math.abs(a.width - b.width) < epsilon
+    && heightEqual
+  );
+}
+
 function transformAgentTrajectory(
   agent: ScenarioAgent,
   anchorPoint: TrajectoryPoint,
@@ -627,6 +661,18 @@ interface ScenarioStoreValue {
   hideAllTrajectories: () => void;
   toggleAgentLabels: () => void;
   toggleAgentExpert: (scenarioId: string, agentId: string) => boolean;
+  updateAgentAttributes: (
+    scenarioId: string,
+    agentId: string,
+    updates: {
+      type?: AgentType;
+      dimensions?: {
+        length?: number;
+        width?: number;
+        height?: number | null;
+      };
+    }
+  ) => boolean;
   removeAllAgents: (scenarioId: string) => boolean;
   spawnVehicleAgent: (scenarioId: string) => ScenarioAgent | undefined;
   removeScenario: (id: string) => void;
@@ -1095,6 +1141,74 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     return didUpdate;
   }, [applyScenarioUpdate]);
 
+  const updateAgentAttributes = useCallback<ScenarioStoreValue['updateAgentAttributes']>((scenarioId, agentId, updates) => {
+    let didUpdate = false;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const targetIndex = scenario.agents.findIndex((agent) => agent.id === agentId);
+      if (targetIndex === -1) {
+        return scenario;
+      }
+
+      const agent = scenario.agents[targetIndex];
+      const nextType = updates.type ?? agent.type;
+
+      let nextDimensions = agent.dimensions;
+      if (updates.dimensions) {
+        const baseDimensions = agent.dimensions ?? DEFAULT_AGENT_DIMENSIONS[nextType];
+        const { length, width, height } = updates.dimensions;
+
+        const resolvePositive = (value: number | undefined, fallback?: number) => {
+          if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+            return value;
+          }
+          return fallback;
+        };
+
+        const resolveOptional = (value: number | null | undefined, fallback?: number) => {
+          if (value === null) {
+            return undefined;
+          }
+          return resolvePositive(value ?? undefined, fallback);
+        };
+
+        const resolvedLength = resolvePositive(length, baseDimensions?.length);
+        const resolvedWidth = resolvePositive(width, baseDimensions?.width);
+        const resolvedHeight = resolveOptional(height, baseDimensions?.height);
+
+        if (resolvedLength !== undefined && resolvedWidth !== undefined) {
+          nextDimensions = {
+            length: resolvedLength,
+            width: resolvedWidth,
+            ...(resolvedHeight !== undefined ? { height: resolvedHeight } : {})
+          };
+        }
+      }
+
+      const typeChanged = agent.type !== nextType;
+      const dimensionsChanged = !areAgentDimensionsEqual(agent.dimensions, nextDimensions);
+      if (!typeChanged && !dimensionsChanged) {
+        return scenario;
+      }
+
+      didUpdate = true;
+
+      const nextAgents = scenario.agents.map((item, index) => (
+        index === targetIndex
+          ? {
+              ...item,
+              type: nextType,
+              dimensions: nextDimensions
+            }
+          : item
+      ));
+
+      return withScenarioRebuild(scenario, nextAgents);
+    });
+
+    return didUpdate;
+  }, [applyScenarioUpdate]);
+
   const removeAllAgents = useCallback<ScenarioStoreValue['removeAllAgents']>((scenarioId) => {
     let didRemove = false;
 
@@ -1167,7 +1281,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
         id: createResourceId('agent'),
         type: 'VEHICLE',
         displayName: `Vehicle ${existingAgents.length + 1}`,
-        dimensions: { length: 4.5, width: 2.0, height: 1.6 },
+        dimensions: { ...DEFAULT_AGENT_DIMENSIONS.VEHICLE },
         trajectory
       };
 
@@ -1760,6 +1874,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     hideAllTrajectories,
     toggleAgentLabels,
     toggleAgentExpert,
+    updateAgentAttributes,
     removeAllAgents,
     spawnVehicleAgent,
     removeScenario,
@@ -1793,6 +1908,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     hideAllTrajectories,
     toggleAgentLabels,
     toggleAgentExpert,
+    updateAgentAttributes,
     removeAllAgents,
     spawnVehicleAgent,
     removeScenario,
