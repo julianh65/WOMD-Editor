@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   useScenarioStore,
+  type AgentLabelMode,
   type EditingEntityRef,
   type EditingMode,
   type EditingTool,
@@ -73,6 +74,14 @@ type AgentHighlightState = {
   selected?: boolean;
   hovered?: boolean;
   driving?: boolean;
+};
+
+type AgentRenderOptions = {
+  showLabel?: boolean;
+  labelMode?: AgentLabelMode;
+  agentIndex?: number;
+  highlight?: AgentHighlightState;
+  isTrackToPredict?: boolean;
 };
 
 interface BaseTransformContext {
@@ -742,10 +751,16 @@ function drawAgent(
   base: CanvasTransform,
   camera: CameraState,
   dims: CanvasDims,
-  agentInfo?: ScenarioAgent,
-  showLabel?: boolean,
-  highlight?: AgentHighlightState
+  agentInfo: ScenarioAgent | undefined,
+  options: AgentRenderOptions = {}
 ) {
+  const {
+    showLabel,
+    labelMode = 'id',
+    agentIndex,
+    highlight,
+    isTrackToPredict
+  } = options;
   const dimensions = resolveAgentDimensions(agentState, agentInfo);
   const lengthMeters = dimensions.length;
   const widthMeters = dimensions.width;
@@ -756,10 +771,23 @@ function drawAgent(
   const { x, y } = worldToCanvas({ x: agentState.x, y: agentState.y }, base, camera, dims);
 
   const colours = getAgentColours(agentState, agentInfo);
-  const labelText = showLabel ? agentInfo?.displayName ?? agentState.id : undefined;
-  const isDriving = Boolean(highlight?.driving);
+  const highlightState = highlight ?? {};
+  const isDriving = Boolean(highlightState.driving);
   const fillColour = isDriving ? '#f97316' : colours.fill;
   const strokeColour = isDriving ? '#fb923c' : colours.stroke;
+
+  const baseLabel = showLabel
+    ? labelMode === 'index'
+      ? agentIndex != null
+        ? `#${agentIndex}`
+        : agentState.id
+      : agentInfo?.displayName ?? agentState.id
+    : undefined;
+  const labelText = baseLabel
+    ? isTrackToPredict
+      ? `P ${baseLabel}`
+      : baseLabel
+    : undefined;
 
   ctx.save();
   ctx.translate(x, y);
@@ -787,8 +815,33 @@ function drawAgent(
     ctx.stroke();
   }
 
-  if (highlight?.selected || highlight?.hovered) {
-    const isSelected = Boolean(highlight?.selected);
+  if (isTrackToPredict) {
+    const haloPadding = Math.max(5, 7 / camera.zoom);
+    const haloLineWidth = Math.max(3.2, 3.6 / camera.zoom);
+    const glow = Math.max(18, 24 / camera.zoom);
+
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.lineWidth = haloLineWidth;
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.95)';
+    ctx.shadowColor = 'rgba(56, 189, 248, 0.65)';
+    ctx.shadowBlur = glow;
+    ctx.strokeRect(
+      -halfLength - haloPadding,
+      -halfWidth - haloPadding,
+      lengthPx + haloPadding * 2,
+      widthPx + haloPadding * 2
+    );
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.2)';
+    ctx.fillRect(-halfLength, -halfWidth, lengthPx, widthPx);
+    ctx.restore();
+  }
+
+  if (highlightState.selected || highlightState.hovered) {
+    const isSelected = Boolean(highlightState.selected);
     ctx.lineWidth = Math.max(isSelected ? 3.2 : 2.2, (isSelected ? 3.2 : 2.2) / camera.zoom);
     const selectedStroke = agentInfo?.isExpert
       ? 'rgba(14, 165, 233, 0.95)'
@@ -796,6 +849,7 @@ function drawAgent(
     ctx.strokeStyle = isSelected ? selectedStroke : 'rgba(94, 234, 212, 0.9)';
     ctx.setLineDash(isSelected ? [] : [12 / camera.zoom, 12 / camera.zoom]);
     ctx.strokeRect(-halfLength, -halfWidth, lengthPx, widthPx);
+    ctx.setLineDash([]);
   }
 
   ctx.restore();
@@ -818,10 +872,12 @@ function drawAgent(
     const rectY = anchorY - rectHeight;
     const textY = rectY + rectHeight / 2;
 
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
+    const labelFill = isTrackToPredict ? 'rgba(45, 212, 191, 0.92)' : 'rgba(15, 23, 42, 0.82)';
+    const labelTextColour = isTrackToPredict ? '#022c22' : '#f8fafc';
+    ctx.fillStyle = labelFill;
     ctx.fillRect(rectX, rectY, rectWidth, rectHeight);
 
-    ctx.fillStyle = '#f8fafc';
+    ctx.fillStyle = labelTextColour;
     ctx.fillText(labelText, x, textY);
     ctx.restore();
   }
@@ -835,6 +891,7 @@ function ScenarioViewer() {
     activeFrameIndex,
     visibleTrajectoryIds,
     showAgentLabels,
+    agentLabelMode,
     pause,
     play,
     isPlaying,
@@ -939,6 +996,14 @@ function ScenarioViewer() {
     return new Map(activeScenario.agents.map((agent) => [agent.id, agent]));
   }, [activeScenario]);
 
+  const agentIndexById = useMemo(() => {
+    if (!activeScenario) {
+      return new Map<string, number>();
+    }
+
+    return new Map(activeScenario.agents.map((agent, index) => [agent.id, index] as const));
+  }, [activeScenario]);
+
   const trajectoryAgents = useMemo(() => {
     if (!activeScenario) {
       return [] as ScenarioAgent[];
@@ -958,6 +1023,14 @@ function ScenarioViewer() {
 
     return activeScenario.agents.filter((agent) => ids.has(agent.id));
   }, [activeScenario, visibleTrajectoryIds, selectedAgentId, hoveredAgentId]);
+
+  const tracksToPredictSet = useMemo(() => {
+    if (!activeScenario) {
+      return new Set<number>();
+    }
+
+    return new Set(activeScenario.tracksToPredict);
+  }, [activeScenario]);
 
   const selectedAgentInfo = useMemo(() => {
     if (!selectedAgentId) {
@@ -1834,7 +1907,15 @@ function ScenarioViewer() {
           hovered: renderState.id === hoveredAgentId && renderState.id !== selectedAgentId,
           driving: isDrivingAgent
         };
-        drawAgent(ctx, renderState, baseTransform, camera, dims, agentInfo, showAgentLabels, highlight);
+        const agentIndex = agentIndexById.get(agentState.id);
+        const isTrackToPredict = typeof agentIndex === 'number' && tracksToPredictSet.has(agentIndex);
+        drawAgent(ctx, renderState, baseTransform, camera, dims, agentInfo, {
+          showLabel: showAgentLabels,
+          labelMode: agentLabelMode,
+          agentIndex,
+          highlight,
+          isTrackToPredict
+        });
       });
     }
 
@@ -1847,12 +1928,15 @@ function ScenarioViewer() {
     activeFrameIndex,
     trajectoryAgents,
     agentById,
+    agentIndexById,
     camera,
     setCamera,
     selectedAgentId,
     hoveredAgentId,
     showAgentLabels,
+    agentLabelMode,
     isDriveActive,
+    tracksToPredictSet,
     trajectoryDraft,
     selectedAnchorPoint,
     selectedAgentInfo,

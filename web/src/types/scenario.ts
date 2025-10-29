@@ -76,6 +76,7 @@ export interface WaymoScenario {
   agents: ScenarioAgent[];
   roadEdges: RoadEdge[];
   frames: ScenarioFrame[];
+  tracksToPredict: number[];
   bounds?: ScenarioBounds;
   raw?: unknown;
 }

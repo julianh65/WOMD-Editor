@@ -14,6 +14,8 @@ type PartialScenario = {
   agents?: unknown;
   roadEdges?: unknown;
   frames?: unknown;
+  tracksToPredict?: unknown;
+  tracks_to_predict?: unknown;
 };
 
 interface RawWaymoVector2 {
@@ -46,12 +48,24 @@ interface RawWaymoRoad {
   geometry?: RawWaymoVector3[];
 }
 
+interface RawWaymoScenarioMetadata {
+  [key: string]: unknown;
+  tracks_to_predict?: Array<number | string>;
+  tracksToPredict?: Array<number | string>;
+  scenario?: {
+    tracks_to_predict?: Array<number | string>;
+    tracksToPredict?: Array<number | string>;
+    [key: string]: unknown;
+  };
+}
+
 interface RawWaymoScenario {
   name?: string;
   scenario_id?: string;
   objects?: RawWaymoObject[];
   roads?: RawWaymoRoad[];
-  metadata?: Record<string, unknown>;
+  tracks_to_predict?: Array<number | string>;
+  metadata?: RawWaymoScenarioMetadata;
 }
 
 const FRAME_INTERVAL_MICROS = 100_000;
@@ -100,6 +114,7 @@ const defaultScenario: WaymoScenario = {
     frameIntervalMicros: FRAME_INTERVAL_MICROS
   },
   agents: [],
+  tracksToPredict: [],
   roadEdges: [],
   frames: [],
   bounds: undefined,
@@ -156,6 +171,84 @@ function mapRoadType(rawType?: string): RoadEdge['type'] | undefined {
     default:
       return 'OTHER';
   }
+}
+
+function sanitiseTrackIndices(value: unknown, agentCount: number): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const indices = new Set<number>();
+  value.forEach((entry) => {
+    let candidate: number | undefined;
+    if (typeof entry === 'number') {
+      candidate = entry;
+    } else if (typeof entry === 'string' && entry.trim() !== '') {
+      const parsed = Number.parseInt(entry, 10);
+      if (Number.isFinite(parsed)) {
+        candidate = parsed;
+      }
+    } else if (entry && typeof entry === 'object') {
+      const maybeIndex = (entry as { track_index?: unknown; trackIndex?: unknown }).track_index
+        ?? (entry as { trackIndex?: unknown }).trackIndex;
+      if (typeof maybeIndex === 'number') {
+        candidate = maybeIndex;
+      } else if (typeof maybeIndex === 'string' && maybeIndex.trim() !== '') {
+        const parsed = Number.parseInt(maybeIndex, 10);
+        if (Number.isFinite(parsed)) {
+          candidate = parsed;
+        }
+      }
+    }
+
+    if (candidate === undefined) {
+      return;
+    }
+
+    if (!Number.isInteger(candidate)) {
+      return;
+    }
+
+    if (candidate < 0 || candidate >= agentCount) {
+      return;
+    }
+
+    indices.add(candidate);
+  });
+
+  return Array.from(indices).sort((a, b) => a - b);
+}
+
+function extractTracksToPredict(raw: RawWaymoScenario, agentCount: number): number[] {
+  const direct = sanitiseTrackIndices(raw.tracks_to_predict, agentCount);
+  if (direct.length > 0) {
+    return direct;
+  }
+
+  const metadata = raw.metadata;
+  if (metadata && typeof metadata === 'object') {
+    const metaTracks = sanitiseTrackIndices(
+      (metadata as { tracks_to_predict?: unknown; tracksToPredict?: unknown }).tracks_to_predict
+        ?? (metadata as { tracksToPredict?: unknown }).tracksToPredict,
+      agentCount
+    );
+    if (metaTracks.length > 0) {
+      return metaTracks;
+    }
+
+    const scenarioMeta = (metadata as RawWaymoScenarioMetadata).scenario;
+    if (scenarioMeta && typeof scenarioMeta === 'object') {
+      const scenarioTracks = sanitiseTrackIndices(
+        scenarioMeta.tracks_to_predict ?? scenarioMeta.tracksToPredict,
+        agentCount
+      );
+      if (scenarioTracks.length > 0) {
+        return scenarioTracks;
+      }
+    }
+  }
+
+  return [];
 }
 
 function createTrajectoryPoints(object: RawWaymoObject, frameIntervalMicros: number): TrajectoryPoint[] {
@@ -334,6 +427,7 @@ function parseWaymoScenario(raw: RawWaymoScenario): WaymoScenario {
       : [],
     type: mapRoadType(road.type)
   }));
+  const tracksToPredict = extractTracksToPredict(raw, agents.length);
 
   const bounds = computeBoundsFromTrajectories(agents) ?? computeBoundsFromRoadGeometry(roadEdges);
   const frames = buildFrames(frameCount, agents, frameIntervalMicros);
@@ -349,6 +443,7 @@ function parseWaymoScenario(raw: RawWaymoScenario): WaymoScenario {
       frameIntervalMicros
     },
     agents,
+    tracksToPredict,
     roadEdges,
     frames,
     bounds,
@@ -381,10 +476,17 @@ export function parseScenario(json: unknown): WaymoScenario {
   const roadEdges = Array.isArray(candidate.roadEdges) ? (candidate.roadEdges as WaymoScenario['roadEdges']) : [];
   const frames = Array.isArray(candidate.frames) ? (candidate.frames as ScenarioFrame[]) : [];
   const bounds = isScenarioBounds((candidate as WaymoScenario).bounds) ? (candidate as WaymoScenario).bounds : undefined;
+  const tracksSource = Array.isArray(candidate.tracksToPredict)
+    ? candidate.tracksToPredict
+    : Array.isArray(candidate.tracks_to_predict)
+      ? candidate.tracks_to_predict
+      : undefined;
+  const tracksToPredict = sanitiseTrackIndices(tracksSource, agents.length);
 
   return {
     metadata,
     agents,
+    tracksToPredict,
     roadEdges,
     frames,
     bounds,

@@ -222,11 +222,21 @@ function buildFramesFromAgents(
     ? Math.max(frameCountOverride, computedFrameCount)
     : computedFrameCount;
 
-  if (frameCount <= 0) {
+  const effectiveFrameCount = frameCount > 0
+    ? frameCount
+    : Math.max(
+        ...agents.map((agent) => {
+          const indices = agent.trajectory.map((point) => point.frameIndex ?? 0);
+          return indices.length > 0 ? Math.max(...indices) + 1 : 0;
+        }),
+        0
+      );
+
+  if (effectiveFrameCount <= 0) {
     return [];
   }
 
-  const frames: ScenarioFrame[] = Array.from({ length: frameCount }, (_, index) => ({
+  const frames: ScenarioFrame[] = Array.from({ length: effectiveFrameCount }, (_, index) => ({
     index,
     timestampMicros: index * frameIntervalMicros,
     agents: [] as ScenarioFrameAgentState[]
@@ -280,6 +290,26 @@ function buildFramesFromAgents(
   return frames;
 }
 
+function remapTracksToPredict(base: WaymoScenario, nextAgents: ScenarioAgent[]): number[] {
+  if (!base.tracksToPredict || base.tracksToPredict.length === 0) {
+    return [];
+  }
+
+  const baseIdByIndex = base.agents.map((agent) => agent.id);
+  const nextIndexById = new Map<string, number>();
+  nextAgents.forEach((agent, index) => {
+    nextIndexById.set(agent.id, index);
+  });
+
+  const remapped = base.tracksToPredict
+    .map((index) => baseIdByIndex[index])
+    .filter((id): id is string => typeof id === 'string' && nextIndexById.has(id))
+    .map((id) => nextIndexById.get(id))
+    .filter((index): index is number => typeof index === 'number');
+
+  return Array.from(new Set(remapped)).sort((a, b) => a - b);
+}
+
 function withScenarioRebuild(base: WaymoScenario, nextAgents: ScenarioAgent[]): WaymoScenario {
   const frameInterval = base.metadata.frameIntervalMicros ?? DEFAULT_FRAME_INTERVAL_MICROS;
   const fallbackFrameCount = Math.max(base.metadata.frameCount, base.frames.length, 1);
@@ -291,10 +321,12 @@ function withScenarioRebuild(base: WaymoScenario, nextAgents: ScenarioAgent[]): 
     ? (base.metadata.durationSeconds ?? computedDurationSeconds)
     : computedDurationSeconds;
   const nextBounds = computeBoundsFromAgents(nextAgents) ?? base.bounds;
+  const tracksToPredict = remapTracksToPredict(base, nextAgents);
 
   return {
     ...base,
     agents: nextAgents,
+    tracksToPredict,
     frames,
     bounds: nextBounds,
     metadata: {
@@ -603,6 +635,8 @@ export type ScenarioSource = 'example' | 'uploaded' | 'blank';
 
 const DEFAULT_FRAME_INTERVAL_MICROS = 100_000;
 
+export type AgentLabelMode = 'id' | 'index';
+
 interface ScenarioHistoryState {
   undo: WaymoScenario[];
   redo: WaymoScenario[];
@@ -651,6 +685,7 @@ interface ScenarioStoreValue {
   playbackSpeed: number;
   visibleTrajectoryIds: ReadonlySet<string>;
   showAgentLabels: boolean;
+  agentLabelMode: AgentLabelMode;
   selectScenario: (id: string) => void;
   setActiveFrameIndex: (index: number) => void;
   play: () => void;
@@ -660,7 +695,9 @@ interface ScenarioStoreValue {
   showAllTrajectories: () => void;
   hideAllTrajectories: () => void;
   toggleAgentLabels: () => void;
+  setAgentLabelMode: (mode: AgentLabelMode) => void;
   toggleAgentExpert: (scenarioId: string, agentId: string) => boolean;
+  setAgentTrackPrediction: (scenarioId: string, agentId: string, shouldInclude: boolean) => boolean;
   updateAgentAttributes: (
     scenarioId: string,
     agentId: string,
@@ -726,6 +763,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   const [playbackSpeed, setPlaybackSpeedState] = useState(1);
   const [visibleTrajectoryIds, setVisibleTrajectoryIds] = useState<Set<string>>(new Set());
   const [showAgentLabels, setShowAgentLabels] = useState(true);
+  const [agentLabelMode, setAgentLabelModeState] = useState<AgentLabelMode>('index');
   const [editingState, setEditingState] = useState<EditingState>(() => createInitialEditingState());
   const [scenarioHistory, setScenarioHistory] = useState<Record<string, ScenarioHistoryState>>({});
   const isApplyingHistoryRef = useRef(false);
@@ -930,6 +968,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
         frameIntervalMicros: undefined
       },
       agents: [],
+      tracksToPredict: [],
       roadEdges: [],
       frames: [],
       bounds: undefined,
@@ -1114,6 +1153,43 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   const toggleAgentLabels = useCallback(() => {
     setShowAgentLabels((prev) => !prev);
   }, []);
+
+  const setAgentLabelMode = useCallback((mode: AgentLabelMode) => {
+    setAgentLabelModeState(mode);
+  }, []);
+
+  const setAgentTrackPrediction = useCallback<ScenarioStoreValue['setAgentTrackPrediction']>((scenarioId, agentId, shouldInclude) => {
+    let didUpdate = false;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const agentIndex = scenario.agents.findIndex((agent) => agent.id === agentId);
+      if (agentIndex === -1) {
+        return scenario;
+      }
+
+      const next = new Set(scenario.tracksToPredict);
+      const currentlyIncluded = next.has(agentIndex);
+
+      if (shouldInclude === currentlyIncluded) {
+        return scenario;
+      }
+
+      if (shouldInclude) {
+        next.add(agentIndex);
+      } else {
+        next.delete(agentIndex);
+      }
+
+      didUpdate = true;
+
+      return {
+        ...scenario,
+        tracksToPredict: Array.from(next).sort((a, b) => a - b)
+      };
+    });
+
+    return didUpdate;
+  }, [applyScenarioUpdate]);
 
   const toggleAgentExpert = useCallback<ScenarioStoreValue['toggleAgentExpert']>((scenarioId, agentId) => {
     let didUpdate = false;
@@ -1864,6 +1940,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     playbackSpeed,
     visibleTrajectoryIds,
     showAgentLabels,
+    agentLabelMode,
     selectScenario,
     setActiveFrameIndex,
     play,
@@ -1873,7 +1950,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     showAllTrajectories,
     hideAllTrajectories,
     toggleAgentLabels,
+    setAgentLabelMode,
     toggleAgentExpert,
+    setAgentTrackPrediction,
     updateAgentAttributes,
     removeAllAgents,
     spawnVehicleAgent,
@@ -1898,6 +1977,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     playbackSpeed,
     visibleTrajectoryIds,
     showAgentLabels,
+    agentLabelMode,
     selectScenario,
     setActiveFrameIndex,
     play,
@@ -1907,7 +1987,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     showAllTrajectories,
     hideAllTrajectories,
     toggleAgentLabels,
+    setAgentLabelMode,
     toggleAgentExpert,
+    setAgentTrackPrediction,
     updateAgentAttributes,
     removeAllAgents,
     spawnVehicleAgent,

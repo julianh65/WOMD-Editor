@@ -13,6 +13,7 @@ export interface ScenarioExportPayload {
   metadata: WaymoScenario['metadata'];
   bounds?: ScenarioBounds;
   agents: ScenarioAgent[];
+  tracksToPredict: number[];
   roadEdges: WaymoScenario['roadEdges'];
   frames: ScenarioFrame[];
 }
@@ -55,6 +56,7 @@ export function buildScenarioExportPayload(scenario: WaymoScenario): ScenarioExp
     metadata: { ...scenario.metadata },
     bounds: scenario.bounds ? { ...scenario.bounds } : undefined,
     agents: cloneAgents(scenario.agents),
+    tracksToPredict: [...scenario.tracksToPredict],
     roadEdges: cloneRoadEdges(scenario.roadEdges),
     frames: cloneFrames(scenario.frames)
   };

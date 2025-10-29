@@ -703,6 +703,19 @@
   background: rgba(15, 23, 42, 0.45);
 }
 
+.trajectory-list__item--prediction {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.trajectory-list__item--prediction strong {
+  color: #5eead4;
+}
+
+.trajectory-list__item--prediction code {
+  color: #bae6fd;
+}
+
 .trajectory-list__item-row {
   display: flex;
   align-items: center;

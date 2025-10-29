@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { downloadScenarioAsJson } from '@/lib/scenarioExporter';
-import { useScenarioStore } from '@/state/scenarioStore';
-import type { AgentType } from '@/types/scenario';
+import { useScenarioStore, type AgentLabelMode } from '@/state/scenarioStore';
+import type { AgentType, ScenarioAgent } from '@/types/scenario';
 
 const ROAD_TYPE_OPTIONS = [
   { value: 'ROAD_EDGE', label: 'Road Edge' },
@@ -55,8 +55,11 @@ function ScenarioEditorPanel() {
     showAllTrajectories,
     hideAllTrajectories,
     showAgentLabels,
+    agentLabelMode,
     toggleAgentLabels,
+    setAgentLabelMode,
     toggleAgentExpert,
+    setAgentTrackPrediction,
     removeAllAgents,
     spawnVehicleAgent,
     setRoadEdgeType,
@@ -90,6 +93,10 @@ function ScenarioEditorPanel() {
   const handleNameChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     setLocalName(event.target.value);
   }, []);
+
+  const handleAgentLabelModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    setAgentLabelMode(event.target.value as AgentLabelMode);
+  }, [setAgentLabelMode]);
 
   const normalizedName = useMemo(() => normalizeScenarioName(localName), [localName]);
 
@@ -145,10 +152,28 @@ function ScenarioEditorPanel() {
   const rotationMode = editingState.rotationMode;
   const selectedAgentId = selectedEntity?.kind === 'agent' ? selectedEntity.id : undefined;
   const agents = useMemo(() => activeScenario?.agents ?? [], [activeScenario?.agents]);
+  const tracksToPredictSet = useMemo(() => new Set(activeScenario?.tracksToPredict ?? []), [activeScenario?.tracksToPredict]);
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId),
     [agents, selectedAgentId]
   );
+  const selectedAgentIndex = useMemo(() => (selectedAgent ? agents.findIndex((agent) => agent.id === selectedAgent.id) : -1), [agents, selectedAgent]);
+  const selectedAgentIsPrediction = selectedAgentIndex >= 0 && tracksToPredictSet.has(selectedAgentIndex);
+  const predictionTargets = useMemo(() => {
+    if (!activeScenario) {
+      return [] as Array<{ index: number; agent: ScenarioAgent }>;
+    }
+
+    return activeScenario.tracksToPredict
+      .map((trackIndex) => {
+        const agent = activeScenario.agents[trackIndex];
+        if (!agent) {
+          return undefined;
+        }
+        return { index: trackIndex, agent };
+      })
+      .filter((entry): entry is { index: number; agent: ScenarioAgent } => typeof entry !== 'undefined');
+  }, [activeScenario]);
   const selectedRoadEdgeId = editingState.selectedEntity?.kind === 'roadEdge' ? editingState.selectedEntity.id : undefined;
   const roadEdges = useMemo(() => activeScenario?.roadEdges ?? [], [activeScenario?.roadEdges]);
   const selectedRoadEdge = useMemo(
@@ -433,6 +458,18 @@ function ScenarioEditorPanel() {
     }
   }, [activeScenarioId, selectedAgent, toggleAgentExpert, pushHistoryEntry]);
 
+  const handleTrackPredictionToggle = useCallback(() => {
+    if (!activeScenarioId || !selectedAgent) {
+      return;
+    }
+
+    setAgentTrackPrediction(activeScenarioId, selectedAgent.id, !selectedAgentIsPrediction);
+  }, [activeScenarioId, selectedAgent, selectedAgentIsPrediction, setAgentTrackPrediction]);
+
+  const handleSelectPredictionTarget = useCallback((agentId: string) => {
+    selectEntity({ kind: 'agent', id: agentId });
+  }, [selectEntity]);
+
   const handleStartPoseKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
       event.preventDefault();
@@ -541,6 +578,51 @@ function ScenarioEditorPanel() {
             onChange={() => toggleAgentLabels()}
           />
         </label>
+        <label>
+          Agent Label Mode
+          <select value={agentLabelMode} onChange={handleAgentLabelModeChange} disabled={!showAgentLabels}>
+            <option value="id">Agent ID</option>
+            <option value="index">Array Index</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="editor-panel__section">
+        <div className="editor-panel__section-header">
+          <h4>Tracks to Predict</h4>
+        </div>
+        {predictionTargets.length === 0 ? (
+          <p className="editor-panel__placeholder">No agents flagged for prediction targets.</p>
+        ) : (
+          <ul className="trajectory-list">
+            {predictionTargets.map(({ index, agent }) => {
+              const isSelected = selectedAgentId === agent.id;
+              const classes = ['trajectory-list__item', 'trajectory-list__item--prediction'];
+              if (isSelected) {
+                classes.push('trajectory-list__item--selected');
+              }
+              return (
+                <li key={agent.id} className={classes.join(' ')}>
+                  <div className="trajectory-list__item-row">
+                    <div>
+                      <strong>#{index}</strong>
+                      {' · '}
+                      <code>{agent.id}</code>
+                      {agent.displayName ? ` · ${agent.displayName}` : ''}
+                    </div>
+                    <button
+                      type="button"
+                      className="button button--secondary"
+                      onClick={() => handleSelectPredictionTarget(agent.id)}
+                    >
+                      Select
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
 
       <div className="editor-panel__section">
@@ -582,12 +664,20 @@ function ScenarioEditorPanel() {
                 <span>{selectedAgent.type}</span>
               </li>
               <li>
+                <span>Array Index</span>
+                <span>{selectedAgentIndex >= 0 ? selectedAgentIndex : '—'}</span>
+              </li>
+              <li>
                 <span>Trajectory Points</span>
                 <span>{selectedAgent.trajectory.length}</span>
               </li>
               <li>
                 <span>Expert</span>
                 <span>{selectedAgent.isExpert ? 'Yes' : 'No'}</span>
+              </li>
+              <li>
+                <span>Predict Target</span>
+                <span>{selectedAgentIsPrediction ? 'Yes' : 'No'}</span>
               </li>
             </ul>
             <label className="toggle-row">
@@ -596,6 +686,14 @@ function ScenarioEditorPanel() {
                 type="checkbox"
                 checked={Boolean(selectedAgent.isExpert)}
                 onChange={handleToggleExpert}
+              />
+            </label>
+            <label className="toggle-row">
+              <span>Include in tracks_to_predict</span>
+              <input
+                type="checkbox"
+                checked={selectedAgentIsPrediction}
+                onChange={handleTrackPredictionToggle}
               />
             </label>
             <div className="selection-edit-grid">
