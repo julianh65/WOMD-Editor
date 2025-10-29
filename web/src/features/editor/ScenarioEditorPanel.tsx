@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import ExportPreviewModal from '@/components/ExportPreviewModal';
 import { downloadScenarioAsJson } from '@/lib/scenarioExporter';
+import { compareScenarioForExport, type ScenarioExportComparison } from '@/lib/scenarioDiff';
 import { useScenarioStore, type AgentLabelMode } from '@/state/scenarioStore';
 import type { AgentType, ScenarioAgent } from '@/types/scenario';
 
@@ -48,6 +50,7 @@ function ScenarioEditorPanel() {
   const {
     activeScenario,
     activeScenarioId,
+    activeScenarioBaseline,
     updateScenario,
     updateAgentStartPose,
     updateAgentAttributes,
@@ -85,6 +88,7 @@ function ScenarioEditorPanel() {
     width: '',
     height: ''
   });
+  const [exportPreview, setExportPreview] = useState<ScenarioExportComparison | null>(null);
 
   useEffect(() => {
     setLocalName(normalizeScenarioName(activeScenario?.metadata.name) || '');
@@ -139,14 +143,28 @@ function ScenarioEditorPanel() {
     redo();
   }, [redo]);
 
-  const handleExport = useCallback(() => {
+  const handleRequestExport = useCallback(() => {
+    if (!activeScenario) {
+      return;
+    }
+
+    const comparison = compareScenarioForExport(activeScenarioBaseline, activeScenario);
+    setExportPreview(comparison);
+  }, [activeScenario, activeScenarioBaseline]);
+
+  const handleConfirmExport = useCallback(() => {
     if (!activeScenario) {
       return;
     }
 
     const draftName = normalizedName || normalizeScenarioName(activeScenario.metadata.name) || 'Scenario';
     downloadScenarioAsJson(activeScenario, { fileName: draftName });
+    setExportPreview(null);
   }, [activeScenario, normalizedName]);
+
+  const handleCancelExport = useCallback(() => {
+    setExportPreview(null);
+  }, []);
 
   const selectedEntity = editingState.selectedEntity;
   const rotationMode = editingState.rotationMode;
@@ -515,6 +533,16 @@ function ScenarioEditorPanel() {
     }
   }, [activeScenarioId, selectedRoadEdge, removeRoadEdge, clearSelection, pushHistoryEntry]);
 
+  useEffect(() => {
+    if (!exportPreview) {
+      return;
+    }
+
+    if (!activeScenario || exportPreview.after.metadata.id !== activeScenario.metadata.id) {
+      setExportPreview(null);
+    }
+  }, [activeScenario, exportPreview, setExportPreview]);
+
   if (!activeScenario) {
     return (
       <section className="editor-panel editor-panel--empty">
@@ -523,329 +551,342 @@ function ScenarioEditorPanel() {
     );
   }
 
+  const exportScenarioName = normalizedName || normalizeScenarioName(activeScenario.metadata.name) || 'Scenario';
+
   return (
-    <section className="editor-panel">
-      <div className="editor-panel__header">
-        <h3>Scenario Details</h3>
-        <div className="editor-panel__header-actions">
-          <button
-            type="button"
-            className="button button--secondary"
-            onClick={handleUndo}
-            disabled={!canUndo}
-            title="Undo is still a work in progress"
-          >
-            Undo (doesn't work)
-          </button>
-          <button
-            type="button"
-            className="button button--secondary"
-            onClick={handleRedo}
-            disabled={!canRedo}
-            title="Redo is still a work in progress"
-          >
-            Redo (doesn't work)
-          </button>
-          <button
-            type="button"
-            className="button"
-            onClick={handleExport}
-          >
-            Export JSON
-          </button>
-        </div>
-      </div>
+    <>
+      {exportPreview && (
+        <ExportPreviewModal
+          scenarioName={exportScenarioName}
+          comparison={exportPreview}
+          onCancel={handleCancelExport}
+          onConfirm={handleConfirmExport}
+        />
+      )}
 
-      <div className="editor-panel__controls">
-        <label>
-          Scenario Name
-          <div className="field-row field-row--filename">
+      <section className="editor-panel">
+        <div className="editor-panel__header">
+          <h3>Scenario Details</h3>
+          <div className="editor-panel__header-actions">
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={handleUndo}
+              disabled={!canUndo}
+              title="Undo is still a work in progress"
+            >
+              Undo (doesn't work)
+            </button>
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={handleRedo}
+              disabled={!canRedo}
+              title="Redo is still a work in progress"
+            >
+              Redo (doesn't work)
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={handleRequestExport}
+            >
+              Export JSON
+            </button>
+          </div>
+        </div>
+
+        <div className="editor-panel__controls">
+          <label>
+            Scenario Name
+            <div className="field-row field-row--filename">
+              <input
+                type="text"
+                placeholder="Scenario name"
+                value={normalizedName}
+                onChange={handleNameChange}
+                onBlur={handleNameCommit}
+              />
+              <span className="field-row__suffix">.json</span>
+            </div>
+          </label>
+          <label className="toggle-row">
+            <span>Show Agent Labels</span>
             <input
-              type="text"
-              placeholder="Scenario name"
-              value={normalizedName}
-              onChange={handleNameChange}
-              onBlur={handleNameCommit}
+              type="checkbox"
+              checked={showAgentLabels}
+              onChange={() => toggleAgentLabels()}
             />
-            <span className="field-row__suffix">.json</span>
-          </div>
-        </label>
-        <label className="toggle-row">
-          <span>Show Agent Labels</span>
-          <input
-            type="checkbox"
-            checked={showAgentLabels}
-            onChange={() => toggleAgentLabels()}
-          />
-        </label>
-        <label>
-          Agent Label Mode
-          <select value={agentLabelMode} onChange={handleAgentLabelModeChange} disabled={!showAgentLabels}>
-            <option value="id">Agent ID</option>
-            <option value="index">Array Index</option>
-          </select>
-        </label>
-      </div>
-
-      <div className="editor-panel__section">
-        <div className="editor-panel__section-header">
-          <h4>Tracks to Predict</h4>
+          </label>
+          <label>
+            Agent Label Mode
+            <select value={agentLabelMode} onChange={handleAgentLabelModeChange} disabled={!showAgentLabels}>
+              <option value="id">Agent ID</option>
+              <option value="index">Array Index</option>
+            </select>
+          </label>
         </div>
-        {predictionTargets.length === 0 ? (
-          <p className="editor-panel__placeholder">No agents flagged for prediction targets.</p>
-        ) : (
-          <ul className="trajectory-list">
-            {predictionTargets.map(({ index, agent }) => {
-              const isSelected = selectedAgentId === agent.id;
-              const classes = ['trajectory-list__item', 'trajectory-list__item--prediction'];
-              if (isSelected) {
-                classes.push('trajectory-list__item--selected');
-              }
-              return (
-                <li key={agent.id} className={classes.join(' ')}>
-                  <div className="trajectory-list__item-row">
-                    <div>
-                      <strong>#{index}</strong>
-                      {' · '}
-                      <code>{agent.id}</code>
-                      {agent.displayName ? ` · ${agent.displayName}` : ''}
+
+        <div className="editor-panel__section">
+          <div className="editor-panel__section-header">
+            <h4>Tracks to Predict</h4>
+          </div>
+          {predictionTargets.length === 0 ? (
+            <p className="editor-panel__placeholder">No agents flagged for prediction targets.</p>
+          ) : (
+            <ul className="trajectory-list">
+              {predictionTargets.map(({ index, agent }) => {
+                const isSelected = selectedAgentId === agent.id;
+                const classes = ['trajectory-list__item', 'trajectory-list__item--prediction'];
+                if (isSelected) {
+                  classes.push('trajectory-list__item--selected');
+                }
+                return (
+                  <li key={agent.id} className={classes.join(' ')}>
+                    <div className="trajectory-list__item-row">
+                      <div>
+                        <strong>#{index}</strong>
+                        {' · '}
+                        <code>{agent.id}</code>
+                        {agent.displayName ? ` · ${agent.displayName}` : ''}
+                      </div>
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        onClick={() => handleSelectPredictionTarget(agent.id)}
+                      >
+                        Select
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      className="button button--secondary"
-                      onClick={() => handleSelectPredictionTarget(agent.id)}
-                    >
-                      Select
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-
-      <div className="editor-panel__section">
-        <div className="editor-panel__section-header">
-          <h4>Agent Trajectories</h4>
-          <div className="editor-panel__section-actions">
-            <button type="button" className="button button--primary" onClick={handleSpawnVehicle}>
-              Spawn Vehicle
-            </button>
-            <button type="button" className="button button--secondary" onClick={allVisible ? hideAllTrajectories : showAllTrajectories}>
-              {allVisible ? 'Hide All' : 'Show All'}
-            </button>
-            <button type="button" className="button button--danger" onClick={handleDeleteAllAgents}>
-              Delete All
-            </button>
-          </div>
-        </div>
-        <p className="editor-panel__placeholder">Select agents directly in the viewer to edit their paths.</p>
-      </div>
-
-      <div className="editor-panel__section">
-        <div className="editor-panel__section-header">
-          <h4>Selection</h4>
-          {selectedEntity && (
-            <button type="button" className="button button--secondary" onClick={handleClearSelection}>
-              Clear Selection
-            </button>
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </div>
-        {selectedAgent ? (
-          <>
-            <ul className="selection-summary">
-              <li>
-                <span>ID</span>
-                <code>{selectedAgent.id}</code>
-              </li>
-              <li>
-                <span>Type</span>
-                <span>{selectedAgent.type}</span>
-              </li>
-              <li>
-                <span>Array Index</span>
-                <span>{selectedAgentIndex >= 0 ? selectedAgentIndex : '—'}</span>
-              </li>
-              <li>
-                <span>Trajectory Points</span>
-                <span>{selectedAgent.trajectory.length}</span>
-              </li>
-              <li>
-                <span>Expert</span>
-                <span>{selectedAgent.isExpert ? 'Yes' : 'No'}</span>
-              </li>
-              <li>
-                <span>Predict Target</span>
-                <span>{selectedAgentIsPrediction ? 'Yes' : 'No'}</span>
-              </li>
-            </ul>
-            <label className="toggle-row">
-              <span>Mark as Expert</span>
-              <input
-                type="checkbox"
-                checked={Boolean(selectedAgent.isExpert)}
-                onChange={handleToggleExpert}
-              />
-            </label>
-            <label className="toggle-row">
-              <span>Include in tracks_to_predict</span>
-              <input
-                type="checkbox"
-                checked={selectedAgentIsPrediction}
-                onChange={handleTrackPredictionToggle}
-              />
-            </label>
-            <div className="selection-edit-grid">
-              <label>
-                Agent Type
-                <select value={agentDetailsDraft.type} onChange={handleAgentTypeDraftChange}>
-                  {AGENT_TYPE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Length (m)
-                <input
-                  type="number"
-                  min="0.1"
-                  step="0.05"
-                  value={agentDetailsDraft.length}
-                  onChange={(event) => handleAgentDimensionChange('length', event.target.value)}
-                  onKeyDown={handleAgentDimensionKeyDown}
-                  placeholder="0.00"
-                />
-              </label>
-              <label>
-                Width (m)
-                <input
-                  type="number"
-                  min="0.1"
-                  step="0.05"
-                  value={agentDetailsDraft.width}
-                  onChange={(event) => handleAgentDimensionChange('width', event.target.value)}
-                  onKeyDown={handleAgentDimensionKeyDown}
-                  placeholder="0.00"
-                />
-              </label>
-              <label>
-                Height (m)
-                <input
-                  type="number"
-                  min="0.1"
-                  step="0.05"
-                  value={agentDetailsDraft.height}
-                  onChange={(event) => handleAgentDimensionChange('height', event.target.value)}
-                  onKeyDown={handleAgentDimensionKeyDown}
-                  placeholder="0.00"
-                />
-              </label>
-            </div>
-            <button type="button" className="button button--secondary" onClick={commitAgentDetails}>
-              Apply Agent Details
-            </button>
-            <div className="selection-edit-grid">
-              <label>
-                Start X (m)
-                <input
-                  type="number"
-                  step="0.05"
-                  value={startPoseDraft.x}
-                  onChange={(event) => handleStartPoseChange('x', event.target.value)}
-                  onBlur={commitStartPose}
-                  onKeyDown={handleStartPoseKeyDown}
-                  placeholder="0.00"
-                />
-              </label>
-              <label>
-                Start Y (m)
-                <input
-                  type="number"
-                  step="0.05"
-                  value={startPoseDraft.y}
-                  onChange={(event) => handleStartPoseChange('y', event.target.value)}
-                  onBlur={commitStartPose}
-                  onKeyDown={handleStartPoseKeyDown}
-                  placeholder="0.00"
-                />
-              </label>
-              <label>
-                Start Heading (deg)
-                <input
-                  type="number"
-                  step="1"
-                  value={startPoseDraft.heading}
-                  onChange={(event) => handleStartPoseChange('heading', event.target.value)}
-                  onBlur={commitStartPose}
-                  onKeyDown={handleStartPoseKeyDown}
-                  placeholder="0"
-                />
-              </label>
-            </div>
-            <div className="selection-rotation-mode">
-              <span className="selection-rotation-mode__label">Rotation Mode</span>
-              <div className="selection-rotation-mode__buttons">
-                <button
-                  type="button"
-                  className={rotationMode === 'path' ? 'button button--primary' : 'button button--secondary'}
-                  onClick={() => setRotationMode('path')}
-                >
-                  Rotate Path
-                </button>
-                <button
-                  type="button"
-                  className={rotationMode === 'pose' ? 'button button--primary' : 'button button--secondary'}
-                  onClick={() => setRotationMode('pose')}
-                >
-                  Pose Only
-                </button>
-              </div>
-            </div>
-            <button type="button" className="button button--secondary" onClick={commitStartPose}>
-              Apply Start Pose
-            </button>
-          </>
-        ) : selectedRoadEdge ? (
-          <>
-            <ul className="selection-summary">
-              <li>
-                <span>ID</span>
-                <code>{selectedRoadEdge.id}</code>
-              </li>
-              <li>
-                <span>Type</span>
-                <span>{selectedRoadEdge.type ?? 'Unspecified'}</span>
-              </li>
-              <li>
-                <span>Vertices</span>
-                <span>{selectedRoadEdge.points.length}</span>
-              </li>
-            </ul>
-            <div className="selection-road-panel">
-              <label>
-                <span>Road Type</span>
-                <select value={selectedRoadEdge.type ?? 'OTHER'} onChange={handleRoadTypeChange}>
-                  {ROAD_TYPE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="selection-note">Segment type hints downstream renderers and exporters.</p>
-              <button type="button" className="button button--danger" onClick={handleDeleteRoadEdge}>
-                Delete Road Segment
+
+        <div className="editor-panel__section">
+          <div className="editor-panel__section-header">
+            <h4>Agent Trajectories</h4>
+            <div className="editor-panel__section-actions">
+              <button type="button" className="button button--primary" onClick={handleSpawnVehicle}>
+                Spawn Vehicle
+              </button>
+              <button type="button" className="button button--secondary" onClick={allVisible ? hideAllTrajectories : showAllTrajectories}>
+                {allVisible ? 'Hide All' : 'Show All'}
+              </button>
+              <button type="button" className="button button--danger" onClick={handleDeleteAllAgents}>
+                Delete All
               </button>
             </div>
-          </>
-        ) : (
-          <p className="editor-panel__placeholder">Select an agent or road segment to edit.</p>
-        )}
-      </div>
-    </section>
+          </div>
+          <p className="editor-panel__placeholder">Select agents directly in the viewer to edit their paths.</p>
+        </div>
+
+        <div className="editor-panel__section">
+          <div className="editor-panel__section-header">
+            <h4>Selection</h4>
+            {selectedEntity && (
+              <button type="button" className="button button--secondary" onClick={handleClearSelection}>
+                Clear Selection
+              </button>
+            )}
+          </div>
+          {selectedAgent ? (
+            <>
+              <ul className="selection-summary">
+                <li>
+                  <span>ID</span>
+                  <code>{selectedAgent.id}</code>
+                </li>
+                <li>
+                  <span>Type</span>
+                  <span>{selectedAgent.type}</span>
+                </li>
+                <li>
+                  <span>Array Index</span>
+                  <span>{selectedAgentIndex >= 0 ? selectedAgentIndex : '—'}</span>
+                </li>
+                <li>
+                  <span>Trajectory Points</span>
+                  <span>{selectedAgent.trajectory.length}</span>
+                </li>
+                <li>
+                  <span>Expert</span>
+                  <span>{selectedAgent.isExpert ? 'Yes' : 'No'}</span>
+                </li>
+                <li>
+                  <span>Predict Target</span>
+                  <span>{selectedAgentIsPrediction ? 'Yes' : 'No'}</span>
+                </li>
+              </ul>
+              <label className="toggle-row">
+                <span>Mark as Expert</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(selectedAgent.isExpert)}
+                  onChange={handleToggleExpert}
+                />
+              </label>
+              <label className="toggle-row">
+                <span>Include in tracks_to_predict</span>
+                <input
+                  type="checkbox"
+                  checked={selectedAgentIsPrediction}
+                  onChange={handleTrackPredictionToggle}
+                />
+              </label>
+              <div className="selection-edit-grid">
+                <label>
+                  Agent Type
+                  <select value={agentDetailsDraft.type} onChange={handleAgentTypeDraftChange}>
+                    {AGENT_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Length (m)
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.05"
+                    value={agentDetailsDraft.length}
+                    onChange={(event) => handleAgentDimensionChange('length', event.target.value)}
+                    onKeyDown={handleAgentDimensionKeyDown}
+                    placeholder="0.00"
+                  />
+                </label>
+                <label>
+                  Width (m)
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.05"
+                    value={agentDetailsDraft.width}
+                    onChange={(event) => handleAgentDimensionChange('width', event.target.value)}
+                    onKeyDown={handleAgentDimensionKeyDown}
+                    placeholder="0.00"
+                  />
+                </label>
+                <label>
+                  Height (m)
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.05"
+                    value={agentDetailsDraft.height}
+                    onChange={(event) => handleAgentDimensionChange('height', event.target.value)}
+                    onKeyDown={handleAgentDimensionKeyDown}
+                    placeholder="0.00"
+                  />
+                </label>
+              </div>
+              <button type="button" className="button button--secondary" onClick={commitAgentDetails}>
+                Apply Agent Details
+              </button>
+              <div className="selection-edit-grid">
+                <label>
+                  Start X (m)
+                  <input
+                    type="number"
+                    step="0.05"
+                    value={startPoseDraft.x}
+                    onChange={(event) => handleStartPoseChange('x', event.target.value)}
+                    onBlur={commitStartPose}
+                    onKeyDown={handleStartPoseKeyDown}
+                    placeholder="0.00"
+                  />
+                </label>
+                <label>
+                  Start Y (m)
+                  <input
+                    type="number"
+                    step="0.05"
+                    value={startPoseDraft.y}
+                    onChange={(event) => handleStartPoseChange('y', event.target.value)}
+                    onBlur={commitStartPose}
+                    onKeyDown={handleStartPoseKeyDown}
+                    placeholder="0.00"
+                  />
+                </label>
+                <label>
+                  Start Heading (deg)
+                  <input
+                    type="number"
+                    step="1"
+                    value={startPoseDraft.heading}
+                    onChange={(event) => handleStartPoseChange('heading', event.target.value)}
+                    onBlur={commitStartPose}
+                    onKeyDown={handleStartPoseKeyDown}
+                    placeholder="0"
+                  />
+                </label>
+              </div>
+              <div className="selection-rotation-mode">
+                <span className="selection-rotation-mode__label">Rotation Mode</span>
+                <div className="selection-rotation-mode__buttons">
+                  <button
+                    type="button"
+                    className={rotationMode === 'path' ? 'button button--primary' : 'button button--secondary'}
+                    onClick={() => setRotationMode('path')}
+                  >
+                    Rotate Path
+                  </button>
+                  <button
+                    type="button"
+                    className={rotationMode === 'pose' ? 'button button--primary' : 'button button--secondary'}
+                    onClick={() => setRotationMode('pose')}
+                  >
+                    Pose Only
+                  </button>
+                </div>
+              </div>
+              <button type="button" className="button button--secondary" onClick={commitStartPose}>
+                Apply Start Pose
+              </button>
+            </>
+          ) : selectedRoadEdge ? (
+            <>
+              <ul className="selection-summary">
+                <li>
+                  <span>ID</span>
+                  <code>{selectedRoadEdge.id}</code>
+                </li>
+                <li>
+                  <span>Type</span>
+                  <span>{selectedRoadEdge.type ?? 'Unspecified'}</span>
+                </li>
+                <li>
+                  <span>Vertices</span>
+                  <span>{selectedRoadEdge.points.length}</span>
+                </li>
+              </ul>
+              <div className="selection-road-panel">
+                <label>
+                  <span>Road Type</span>
+                  <select value={selectedRoadEdge.type ?? 'OTHER'} onChange={handleRoadTypeChange}>
+                    {ROAD_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="selection-note">Segment type hints downstream renderers and exporters.</p>
+                <button type="button" className="button button--danger" onClick={handleDeleteRoadEdge}>
+                  Delete Road Segment
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="editor-panel__placeholder">Select an agent or road segment to edit.</p>
+          )}
+        </div>
+      </section>
+    </>
   );
 }
 

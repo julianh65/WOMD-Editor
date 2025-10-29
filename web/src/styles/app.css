@@ -743,6 +743,247 @@
   border-style: dashed;
 }
 
+.export-preview {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: rgba(15, 23, 42, 0.75);
+  z-index: 1000;
+}
+
+.export-preview__dialog {
+  width: min(940px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.75rem 2rem;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 1rem;
+  box-shadow: 0 32px 80px rgba(2, 6, 23, 0.6);
+  overflow: hidden;
+}
+
+.export-preview__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.export-preview__header h2 {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+.export-preview__header p {
+  margin: 0.35rem 0 0;
+  color: #94a3b8;
+  font-size: 0.95rem;
+}
+
+.export-preview__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.export-preview__summary-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.75rem;
+}
+
+.export-preview__close {
+  border: none;
+  background: rgba(148, 163, 184, 0.15);
+  color: #e2e8f0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  font-size: 1.25rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.export-preview__close:hover {
+  background: rgba(148, 163, 184, 0.3);
+}
+
+.export-preview__content {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding-right: 0.5rem;
+}
+
+.export-preview__columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.25rem;
+}
+
+.export-preview__column {
+  background: rgba(30, 41, 59, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 0.85rem;
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.export-preview__column h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.export-preview__column--current {
+  border-color: rgba(56, 189, 248, 0.4);
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.export-preview__stats {
+  margin: 0;
+  display: grid;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.export-preview__stats div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.export-preview__stats dt {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.export-preview__stats dd {
+  margin: 0;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.export-preview__placeholder {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+.export-preview__diff {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.export-preview__diff h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.export-preview__notice {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.75rem;
+  background: rgba(56, 189, 248, 0.12);
+  color: #bae6fd;
+  font-size: 0.9rem;
+}
+
+.export-preview__diff-group {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.export-preview__diff-group strong {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.export-preview__diff-group ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.export-preview__diff-group li {
+  font-size: 0.9rem;
+  color: #e2e8f0;
+}
+
+.export-preview__value {
+  font-weight: 600;
+}
+
+.export-preview__value--from {
+  color: #f87171;
+}
+
+.export-preview__value--to {
+  color: #34d399;
+}
+
+.export-preview__more {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.export-preview__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.export-preview__diff-group code {
+  color: #bae6fd;
+}
+
+@media (max-width: 720px) {
+  .export-preview {
+    padding: 1.25rem;
+  }
+
+  .export-preview__dialog {
+    padding: 1.25rem;
+  }
+
+  .export-preview__columns {
+    grid-template-columns: 1fr;
+  }
+
+  .export-preview__content {
+    padding-right: 0;
+  }
+}
+
+
 @media (max-width: 1024px) {
   .app-body {
     grid-template-columns: 280px 1fr;

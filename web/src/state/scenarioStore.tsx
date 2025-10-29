@@ -647,6 +647,7 @@ export interface ScenarioResource {
   name: string;
   source: ScenarioSource;
   scenario: WaymoScenario;
+  baseline?: WaymoScenario;
 }
 
 export interface EditingStoreValue {
@@ -679,6 +680,7 @@ interface ScenarioStoreValue {
   scenarios: ScenarioResource[];
   activeScenarioId?: string;
   activeScenario?: WaymoScenario;
+  activeScenarioBaseline?: WaymoScenario;
   activeFrameIndex: number;
   activeFrame?: ScenarioFrame;
   isPlaying: boolean;
@@ -933,12 +935,14 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
 
   const loadScenarioFromJson = useCallback<ScenarioStoreValue['loadScenarioFromJson']>(({ json, name, source = 'uploaded' }) => {
     const parsed = parseScenario(json);
+    const baselineSnapshot = cloneScenarioState(parsed);
 
     const resource: ScenarioResource = {
       id: parsed.metadata.id || createResourceId('scenario'),
       name: name || parsed.metadata.name || 'Imported Scenario',
       source,
-      scenario: parsed
+      scenario: parsed,
+      baseline: baselineSnapshot
     };
 
     upsertScenario(resource);
@@ -979,7 +983,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       id: scenario.metadata.id,
       name: scenario.metadata.name,
       source: 'blank',
-      scenario
+      scenario,
+      baseline: cloneScenarioState(scenario)
     };
 
     upsertScenario(resource);
@@ -1018,7 +1023,12 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     });
   }, []);
 
-  const activeScenario = useMemo(() => scenarios.find((resource) => resource.id === activeScenarioId)?.scenario, [scenarios, activeScenarioId]);
+  const activeScenarioResource = useMemo(
+    () => scenarios.find((resource) => resource.id === activeScenarioId),
+    [scenarios, activeScenarioId]
+  );
+  const activeScenario = activeScenarioResource?.scenario;
+  const activeScenarioBaseline = activeScenarioResource?.baseline;
   const activeScenarioHistory = scenarioHistory[activeScenarioId ?? ''];
   const canUndo = (activeScenarioHistory?.undo.length ?? 0) > 0 && editingState.history.undoStack.length > 0;
   const canRedo = (activeScenarioHistory?.redo.length ?? 0) > 0 && editingState.history.redoStack.length > 0;
@@ -1934,6 +1944,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     scenarios,
     activeScenarioId,
     activeScenario,
+    activeScenarioBaseline,
     activeFrameIndex,
     activeFrame,
     isPlaying,
@@ -1971,6 +1982,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     scenarios,
     activeScenarioId,
     activeScenario,
+    activeScenarioBaseline,
     activeFrameIndex,
     activeFrame,
     isPlaying,
