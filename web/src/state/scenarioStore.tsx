@@ -29,6 +29,17 @@ export interface EditingEntityRef {
   id: string;
 }
 
+export interface RoadHandleRef {
+  roadId: string;
+  pointIndex: number;
+}
+
+export interface RoadSegmentRef {
+  roadId: string;
+  segmentIndex: number;
+  distance?: number;
+}
+
 export interface TrajectorySample {
   x: number;
   y: number;
@@ -71,6 +82,9 @@ export interface EditingState {
   rotationMode: 'path' | 'pose';
   hoveredEntity?: EditingEntityRef;
   selectedEntity?: EditingEntityRef;
+  hoveredRoadHandle?: RoadHandleRef;
+  hoveredRoadSegment?: RoadSegmentRef;
+  selectedRoadHandle?: RoadHandleRef;
   isRecording: boolean;
   trajectoryDraft?: TrajectoryDraft;
   roadDraft?: RoadDraft;
@@ -84,6 +98,9 @@ function createInitialEditingState(): EditingState {
     rotationMode: 'path',
     hoveredEntity: undefined,
     selectedEntity: undefined,
+    hoveredRoadHandle: undefined,
+    hoveredRoadSegment: undefined,
+    selectedRoadHandle: undefined,
     isRecording: false,
     trajectoryDraft: undefined,
     roadDraft: undefined,
@@ -358,13 +375,19 @@ function cloneScenarioState(scenario: WaymoScenario): WaymoScenario {
   return clone;
 }
 
+function sanitiseRoadPoint(point: RoadDraftPoint): RoadDraftPoint | undefined {
+  const x = Number(point.x);
+  const y = Number(point.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return undefined;
+  }
+  return { x, y };
+}
+
 function sanitiseRoadPoints(points: RoadDraftPoint[]): RoadDraftPoint[] {
   return points
-    .map((point) => ({
-      x: Number(point.x),
-      y: Number(point.y)
-    }))
-    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    .map((point) => sanitiseRoadPoint(point))
+    .filter((point): point is RoadDraftPoint => typeof point !== 'undefined');
 }
 
 function areRoadPointsEqual(a: RoadDraftPoint[], b: RoadDraftPoint[]) {
@@ -658,6 +681,9 @@ export interface EditingStoreValue {
   hoverEntity: (ref?: EditingEntityRef) => void;
   selectEntity: (ref?: EditingEntityRef) => void;
   clearSelection: () => void;
+  setHoveredRoadHandle: (ref?: RoadHandleRef) => void;
+  setHoveredRoadSegment: (ref?: RoadSegmentRef) => void;
+  setSelectedRoadHandle: (ref?: RoadHandleRef) => void;
   beginTrajectoryRecording: (input: { agentId: string; startedAtMs?: number }) => void;
   appendTrajectorySample: (sample: TrajectorySample) => void;
   completeTrajectoryRecording: (options?: { label?: string }) => EditingHistoryEntry | undefined;
@@ -737,6 +763,23 @@ interface ScenarioStoreValue {
     scenarioId: string,
     roadId: string,
     points: RoadDraftPoint[]
+  ) => boolean;
+  updateRoadEdgePoint: (
+    scenarioId: string,
+    roadId: string,
+    pointIndex: number,
+    point: RoadDraftPoint
+  ) => boolean;
+  insertRoadEdgePoint: (
+    scenarioId: string,
+    roadId: string,
+    point: RoadDraftPoint,
+    options?: { afterIndex?: number }
+  ) => number | undefined;
+  removeRoadEdgePoint: (
+    scenarioId: string,
+    roadId: string,
+    pointIndex: number
   ) => boolean;
   setRoadEdgeType: (
     scenarioId: string,
@@ -1431,17 +1474,91 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   }, []);
 
   const selectEntity = useCallback((ref?: EditingEntityRef) => {
-    setEditingState((prev) => ({
-      ...prev,
-      selectedEntity: ref
-    }));
+    setEditingState((prev) => {
+      let selectedRoadHandle: RoadHandleRef | undefined;
+      if (ref?.kind === 'roadEdge' && prev.selectedRoadHandle?.roadId === ref.id) {
+        selectedRoadHandle = prev.selectedRoadHandle;
+      } else if (ref?.kind === 'roadEdge') {
+        selectedRoadHandle = undefined;
+      } else {
+        selectedRoadHandle = undefined;
+      }
+
+      return {
+        ...prev,
+        selectedEntity: ref,
+        selectedRoadHandle
+      };
+    });
   }, []);
 
   const clearSelection = useCallback(() => {
     setEditingState((prev) => ({
       ...prev,
-      selectedEntity: undefined
+      selectedEntity: undefined,
+      selectedRoadHandle: undefined
     }));
+  }, []);
+
+  const setHoveredRoadHandle = useCallback((ref?: RoadHandleRef) => {
+    setEditingState((prev) => {
+      const current = prev.hoveredRoadHandle;
+      if (
+        (!ref && !current)
+        || (ref && current && ref.roadId === current.roadId && ref.pointIndex === current.pointIndex)
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        hoveredRoadHandle: ref
+      };
+    });
+  }, []);
+
+  const setHoveredRoadSegment = useCallback((ref?: RoadSegmentRef) => {
+    setEditingState((prev) => {
+      const current = prev.hoveredRoadSegment;
+      if (
+        (!ref && !current)
+        || (
+          ref
+          && current
+          && ref.roadId === current.roadId
+          && ref.segmentIndex === current.segmentIndex
+        )
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        hoveredRoadSegment: ref
+      };
+    });
+  }, []);
+
+  const setSelectedRoadHandle = useCallback((ref?: RoadHandleRef) => {
+    setEditingState((prev) => {
+      const current = prev.selectedRoadHandle;
+      if (
+        (!ref && !current)
+        || (
+          ref
+          && current
+          && ref.roadId === current.roadId
+          && ref.pointIndex === current.pointIndex
+        )
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        selectedRoadHandle: ref
+      };
+    });
   }, []);
 
   const beginRoadDraft = useCallback((input: { scenarioId: string; type?: RoadEdge['type']; startPoint?: RoadDraftPoint }) => {
@@ -1835,6 +1952,140 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     return didUpdate;
   }, [applyScenarioUpdate]);
 
+  const updateRoadEdgePoint = useCallback<ScenarioStoreValue['updateRoadEdgePoint']>((scenarioId, roadId, pointIndex, point) => {
+    let didUpdate = false;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const edgeIndex = scenario.roadEdges.findIndex((edge) => edge.id === roadId);
+      if (edgeIndex === -1) {
+        return scenario;
+      }
+
+      const existing = scenario.roadEdges[edgeIndex];
+      if (pointIndex < 0 || pointIndex >= existing.points.length) {
+        return scenario;
+      }
+
+      const sanitisedPoint = sanitiseRoadPoint(point);
+      if (!sanitisedPoint) {
+        return scenario;
+      }
+
+      const currentPoint = existing.points[pointIndex];
+      const epsilon = 1e-6;
+      if (
+        Math.abs(currentPoint.x - sanitisedPoint.x) < epsilon
+        && Math.abs(currentPoint.y - sanitisedPoint.y) < epsilon
+      ) {
+        return scenario;
+      }
+
+      const nextPoints = [...existing.points];
+      nextPoints.splice(pointIndex, 1, sanitisedPoint);
+
+      const sanitisedPoints = sanitiseRoadPoints(nextPoints);
+      if (sanitisedPoints.length !== nextPoints.length || sanitisedPoints.length < 2) {
+        return scenario;
+      }
+
+      const nextEdges = [...scenario.roadEdges];
+      nextEdges.splice(edgeIndex, 1, {
+        ...existing,
+        points: sanitisedPoints
+      });
+
+      didUpdate = true;
+
+      return {
+        ...scenario,
+        roadEdges: nextEdges
+      };
+    });
+
+    return didUpdate;
+  }, [applyScenarioUpdate]);
+
+  const insertRoadEdgePoint = useCallback<ScenarioStoreValue['insertRoadEdgePoint']>((scenarioId, roadId, point, options) => {
+    let insertedIndex: number | undefined;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const edgeIndex = scenario.roadEdges.findIndex((edge) => edge.id === roadId);
+      if (edgeIndex === -1) {
+        return scenario;
+      }
+
+      const existing = scenario.roadEdges[edgeIndex];
+      const sanitisedPoint = sanitiseRoadPoint(point);
+      if (!sanitisedPoint) {
+        return scenario;
+      }
+
+      const afterIndexRaw = options?.afterIndex ?? existing.points.length - 1;
+      const afterIndex = Math.min(Math.max(afterIndexRaw, -1), existing.points.length - 1);
+      const insertAt = afterIndex + 1;
+
+      const nextPoints = [...existing.points];
+      nextPoints.splice(insertAt, 0, sanitisedPoint);
+
+      const sanitisedPoints = sanitiseRoadPoints(nextPoints);
+      if (sanitisedPoints.length !== nextPoints.length || sanitisedPoints.length < 2) {
+        return scenario;
+      }
+
+      insertedIndex = insertAt;
+
+      const nextEdges = [...scenario.roadEdges];
+      nextEdges.splice(edgeIndex, 1, {
+        ...existing,
+        points: sanitisedPoints
+      });
+
+      return {
+        ...scenario,
+        roadEdges: nextEdges
+      };
+    });
+
+    return insertedIndex;
+  }, [applyScenarioUpdate]);
+
+  const removeRoadEdgePoint = useCallback<ScenarioStoreValue['removeRoadEdgePoint']>((scenarioId, roadId, pointIndex) => {
+    let didRemove = false;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const edgeIndex = scenario.roadEdges.findIndex((edge) => edge.id === roadId);
+      if (edgeIndex === -1) {
+        return scenario;
+      }
+
+      const existing = scenario.roadEdges[edgeIndex];
+      if (existing.points.length <= 2 || pointIndex < 0 || pointIndex >= existing.points.length) {
+        return scenario;
+      }
+
+      const nextPoints = existing.points.filter((_, index) => index !== pointIndex);
+      const sanitisedPoints = sanitiseRoadPoints(nextPoints);
+      if (sanitisedPoints.length !== nextPoints.length || sanitisedPoints.length < 2) {
+        return scenario;
+      }
+
+      const nextEdges = [...scenario.roadEdges];
+      nextEdges.splice(edgeIndex, 1, {
+        ...existing,
+        points: sanitisedPoints
+      });
+
+      didRemove = true;
+
+      return {
+        ...scenario,
+        roadEdges: nextEdges
+      };
+    });
+
+    return didRemove;
+  }, [applyScenarioUpdate]);
+
   const setRoadEdgeType = useCallback<ScenarioStoreValue['setRoadEdgeType']>((scenarioId, roadId, type) => {
     let didUpdate = false;
 
@@ -1898,6 +2149,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     hoverEntity,
     selectEntity,
     clearSelection,
+    setHoveredRoadHandle,
+    setHoveredRoadSegment,
+    setSelectedRoadHandle,
     beginTrajectoryRecording,
     appendTrajectorySample,
     completeTrajectoryRecording,
@@ -1922,6 +2176,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     hoverEntity,
     selectEntity,
     clearSelection,
+    setHoveredRoadHandle,
+    setHoveredRoadSegment,
+    setSelectedRoadHandle,
     beginTrajectoryRecording,
     appendTrajectorySample,
     completeTrajectoryRecording,
@@ -1975,6 +2232,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     applyRecordedTrajectory,
     addRoadEdge,
     updateRoadEdgePoints,
+    updateRoadEdgePoint,
+    insertRoadEdgePoint,
+    removeRoadEdgePoint,
     setRoadEdgeType,
     removeRoadEdge,
     editing: editingValue
@@ -2013,6 +2273,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     applyRecordedTrajectory,
     addRoadEdge,
     updateRoadEdgePoints,
+    updateRoadEdgePoint,
+    insertRoadEdgePoint,
+    removeRoadEdgePoint,
     setRoadEdgeType,
     removeRoadEdge,
     editingValue

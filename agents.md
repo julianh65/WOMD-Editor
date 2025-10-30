@@ -14,6 +14,7 @@ Deliver a visual, browser-based scenario authoring environment for the Waymo Ope
 - JSON export now produces deterministic payloads (bounds, agents, road geometry, frames) with sanitized filenames, so round-tripping scenarios “just works”.
 - Viewer headings are smoothed during frame rebuilds to keep vehicle orientation stable when reversing or driving multi-point turns.
 - Transform gizmo + sidebar offer a `Rotate Path` / `Pose Only` toggle, letting editors either spin the entire trajectory or simply realign the start pose as needed.
+- Export preview modal now compares current edits against the imported baseline, highlighting agent/road/metadata diffs before download.
 
 ## Editing Vision
 1. **Trajectory Editing** – Select an agent, inspect its path, insert/delete/move control points with smooth interpolation, adjust headings/speeds per frame.
@@ -76,5 +77,5 @@ Fixes
 2. Playback heading indicator no longer flips during reversing; derived frame headings are normalized with continuity smoothing.
 
 ---
-Last updated: JSON export, heading smoothing, rotation modes (Editing sprint, Week 4).
+Last updated: export preview diff modal, baseline snapshot tracking (Editing sprint, Week 4).
 ---
