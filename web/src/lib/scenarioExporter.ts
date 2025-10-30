@@ -83,7 +83,7 @@ export interface WaymoScenarioExportPayload {
   scenario_id: string;
   objects: WaymoExportObject[];
   roads: WaymoExportRoad[];
-  tracks_to_predict?: Array<number | string>;
+  tracks_to_predict?: Array<{ track_index: number; difficulty: number }>;
   tl_states: unknown[];
   metadata?: Record<string, unknown>;
 }
@@ -224,6 +224,17 @@ function mapRoadToWaymoRoad(edge: WaymoScenario['roadEdges'][number]): WaymoExpo
   return road;
 }
 
+function buildTrackPredictionEntries(indices: number[]): Array<{ track_index: number; difficulty: number }> | undefined {
+  if (!Array.isArray(indices) || indices.length === 0) {
+    return undefined;
+  }
+
+  return indices.map((trackIndex) => ({
+    track_index: trackIndex,
+    difficulty: 0
+  }));
+}
+
 function cloneIfObject<T>(value: T): T {
   if (!value || typeof value !== 'object') {
     return value;
@@ -242,8 +253,9 @@ function buildWaymoMetadata(scenario: WaymoScenario, exportedAt: string): Record
     ? { ...(raw.metadata as Record<string, unknown>) }
     : {};
 
-  if (scenario.tracksToPredict.length > 0) {
-    baseMetadata.tracks_to_predict = [...scenario.tracksToPredict];
+  const tracksToPredict = buildTrackPredictionEntries(scenario.tracksToPredict);
+  if (tracksToPredict) {
+    baseMetadata.tracks_to_predict = tracksToPredict;
   }
 
   if (scenario.bounds) {
@@ -277,7 +289,7 @@ export function buildWaymoScenarioExportPayload(scenario: WaymoScenario, options
     scenario_id: scenario.metadata.id ?? 'untitled',
     objects: scenario.agents.map(mapAgentToWaymoObject),
     roads: scenario.roadEdges.map(mapRoadToWaymoRoad),
-    tracks_to_predict: scenario.tracksToPredict.length > 0 ? [...scenario.tracksToPredict] : undefined,
+    tracks_to_predict: buildTrackPredictionEntries(scenario.tracksToPredict),
     tl_states: tlStates,
     metadata: buildWaymoMetadata(scenario, exportedAt)
   };
