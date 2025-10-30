@@ -50,7 +50,7 @@ function cloneFrames(frames: ScenarioFrame[]): ScenarioFrame[] {
 }
 
 type WaymoVector3 = { x: number; y: number; z: number };
-type WaymoVelocity = { x: number; y: number };
+type WaymoVelocity = { x: number; y: number; z: number };
 
 interface WaymoExportObject {
   id: number | string;
@@ -71,6 +71,11 @@ interface WaymoExportRoad {
   map_element_id?: number | string;
   type?: string;
   geometry: WaymoVector3[];
+  width?: number;
+  length?: number;
+  height?: number;
+  goalPosition?: WaymoVector3;
+  mark_as_expert?: boolean;
 }
 
 export interface WaymoScenarioExportPayload {
@@ -83,11 +88,13 @@ export interface WaymoScenarioExportPayload {
   metadata?: Record<string, unknown>;
 }
 
+const TRAJECTORY_LENGTH = 91;
+
 const AGENT_TYPE_TO_RAW: Record<string, string> = {
   VEHICLE: 'vehicle',
   PEDESTRIAN: 'pedestrian',
   CYCLIST: 'cyclist',
-  OTHER: 'other'
+  OTHER: 'vehicle'
 };
 
 const ROAD_TYPE_TO_RAW: Record<string, string> = {
@@ -160,7 +167,8 @@ function mapAgentToWaymoObject(agent: ScenarioAgent): WaymoExportObject {
       ? point.velocityY
       : (typeof point.speed === 'number' && typeof point.heading === 'number'
           ? point.speed * Math.sin(point.heading)
-          : 0)
+          : 0),
+    z: 0
   }));
 
   const valid: boolean[] = trajectory.map((point) => point.valid !== false);
@@ -169,7 +177,7 @@ function mapAgentToWaymoObject(agent: ScenarioAgent): WaymoExportObject {
   const length = toFiniteNumber(agent.dimensions?.length);
   const width = toFiniteNumber(agent.dimensions?.width);
   const height = toFiniteNumber(agent.dimensions?.height);
-  const type = AGENT_TYPE_TO_RAW[agent.type] ?? 'other';
+  const type = AGENT_TYPE_TO_RAW[agent.type] ?? 'vehicle';
   const lastValidPoint = [...trajectory].reverse().find((point) => point.valid !== false);
 
   return {
@@ -182,7 +190,7 @@ function mapAgentToWaymoObject(agent: ScenarioAgent): WaymoExportObject {
     heading,
     velocity,
     valid,
-    mark_as_expert: agent.isExpert ? true : undefined,
+    mark_as_expert: agent.isExpert === true,
     goalPosition: lastValidPoint
       ? {
           x: lastValidPoint.x,
@@ -195,19 +203,25 @@ function mapAgentToWaymoObject(agent: ScenarioAgent): WaymoExportObject {
 
 function mapRoadToWaymoRoad(edge: WaymoScenario['roadEdges'][number]): WaymoExportRoad {
   const id = toIdentifier(edge.id);
-  const mapElementId = toIdentifier(edge.id);
   const type = edge.type ? ROAD_TYPE_TO_RAW[edge.type] ?? 'other' : undefined;
-
-  return {
+  const mapElementId = toFiniteNumber(edge.id);
+  const road: WaymoExportRoad = {
     id,
-    map_element_id: mapElementId,
-    type,
     geometry: edge.points.map((point) => ({
       x: point.x,
       y: point.y,
       z: 0
     }))
   };
+
+  if (typeof mapElementId === 'number') {
+    road.map_element_id = mapElementId;
+  }
+  if (type) {
+    road.type = type;
+  }
+
+  return road;
 }
 
 function cloneIfObject<T>(value: T): T {
@@ -280,6 +294,297 @@ export function buildScenarioExportPayload(scenario: WaymoScenario): ScenarioExp
     roadEdges: cloneRoadEdges(scenario.roadEdges),
     frames: cloneFrames(scenario.frames)
   };
+}
+
+type BinaryWriter = {
+  writeInt(value: number): void;
+  writeFloat(value: number): void;
+  toUint8Array(): Uint8Array;
+};
+
+function createBinaryWriter(): BinaryWriter {
+  const bytes: number[] = [];
+  const scratch = new ArrayBuffer(4);
+  const scratchView = new DataView(scratch);
+  const scratchBytes = new Uint8Array(scratch);
+
+  return {
+    writeInt(value: number) {
+      scratchView.setInt32(0, Math.trunc(value) || 0, true);
+      bytes.push(scratchBytes[0], scratchBytes[1], scratchBytes[2], scratchBytes[3]);
+    },
+    writeFloat(value: number) {
+      scratchView.setFloat32(0, Number.isFinite(value) ? value : 0, true);
+      bytes.push(scratchBytes[0], scratchBytes[1], scratchBytes[2], scratchBytes[3]);
+    },
+    toUint8Array() {
+      return new Uint8Array(bytes);
+    }
+  };
+}
+
+function calculateTriangleArea(p1: WaymoVector3, p2: WaymoVector3, p3: WaymoVector3): number {
+  return 0.5 * Math.abs((p1.x - p3.x) * (p2.y - p1.y) - (p1.x - p2.x) * (p3.y - p1.y));
+}
+
+function simplifyPolylineForBinary(points: WaymoVector3[], threshold: number): WaymoVector3[] {
+  const numPoints = points.length;
+  if (numPoints < 3) {
+    return points;
+  }
+
+  const skip = new Array<boolean>(numPoints).fill(false);
+  let skipChanged = true;
+
+  while (skipChanged) {
+    skipChanged = false;
+    let k = 0;
+
+    while (k < numPoints - 1) {
+      let k1 = k + 1;
+      while (k1 < numPoints - 1 && skip[k1]) {
+        k1 += 1;
+      }
+      if (k1 >= numPoints - 1) {
+        break;
+      }
+
+      let k2 = k1 + 1;
+      while (k2 < numPoints && skip[k2]) {
+        k2 += 1;
+      }
+      if (k2 >= numPoints) {
+        break;
+      }
+
+      const area = calculateTriangleArea(points[k], points[k1], points[k2]);
+      if (area < threshold) {
+        skip[k1] = true;
+        skipChanged = true;
+        k = k2;
+      } else {
+        k = k1;
+      }
+    }
+  }
+
+  return points.filter((_, index) => !skip[index]);
+}
+
+function getComponent(
+  items: Array<{ [key in 'x' | 'y' | 'z']?: number }> | undefined,
+  index: number,
+  component: 'x' | 'y' | 'z'
+): number {
+  if (!Array.isArray(items) || index >= items.length) {
+    return 0;
+  }
+
+  const value = items[index]?.[component];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function getHeadingValue(headings: number[] | undefined, index: number): number {
+  if (!Array.isArray(headings) || index >= headings.length) {
+    return 0;
+  }
+
+  const value = headings[index];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function getBooleanFlag(values: Array<boolean | number> | undefined, index: number): number {
+  if (!Array.isArray(values) || index >= values.length) {
+    return 0;
+  }
+
+  const value = values[index];
+  if (typeof value === 'boolean') {
+    return value ? 1 : 0;
+  }
+  if (typeof value === 'number') {
+    return value !== 0 ? 1 : 0;
+  }
+  return 0;
+}
+
+function toFiniteOrZero(value: unknown): number {
+  const numeric = toFiniteNumber(value);
+  return numeric ?? 0;
+}
+
+function mapAgentTypeToBinary(type: unknown): number {
+  if (typeof type === 'number' && Number.isFinite(type)) {
+    return Math.trunc(type);
+  }
+
+  switch (typeof type === 'string' ? type.toLowerCase() : '') {
+    case 'vehicle':
+      return 1;
+    case 'pedestrian':
+      return 2;
+    case 'cyclist':
+      return 3;
+    default:
+      return 1;
+  }
+}
+
+function normaliseRoadTypeSource(value: unknown): number {
+  const numeric = toFiniteNumber(value);
+  return numeric != null ? Math.trunc(numeric) : 0;
+}
+
+function mapRoadTypeCategory(rawType: number): number {
+  let type = rawType;
+  if (type >= 0 && type <= 3) {
+    type = 4;
+  } else if (type >= 5 && type <= 13) {
+    type = 5;
+  } else if (type >= 14 && type <= 16) {
+    type = 6;
+  } else if (type === 17) {
+    type = 7;
+  } else if (type === 18) {
+    type = 8;
+  } else if (type === 19) {
+    type = 9;
+  } else if (type === 20) {
+    type = 10;
+  }
+  return type;
+}
+
+function buildWaymoBinaryFromPayload(payload: WaymoScenarioExportPayload): Uint8Array {
+  const writer = createBinaryWriter();
+  const objects = Array.isArray(payload.objects) ? payload.objects : [];
+  const roads = Array.isArray(payload.roads) ? payload.roads : [];
+
+  writer.writeInt(objects.length);
+  writer.writeInt(roads.length);
+
+  objects.forEach((object) => {
+    const typeCode = mapAgentTypeToBinary(object.type);
+    writer.writeInt(typeCode);
+    writer.writeInt(TRAJECTORY_LENGTH);
+
+    const positions = Array.isArray(object.position) ? object.position : [];
+    const velocities = Array.isArray(object.velocity) ? object.velocity : [];
+    const headings = Array.isArray(object.heading) ? object.heading : [];
+    const valids = Array.isArray(object.valid) ? object.valid : [];
+
+    (['x', 'y', 'z'] as const).forEach((axis) => {
+      for (let i = 0; i < TRAJECTORY_LENGTH; i += 1) {
+        writer.writeFloat(getComponent(positions, i, axis));
+      }
+    });
+
+    (['x', 'y', 'z'] as const).forEach((axis) => {
+      for (let i = 0; i < TRAJECTORY_LENGTH; i += 1) {
+        writer.writeFloat(getComponent(velocities, i, axis));
+      }
+    });
+
+    for (let i = 0; i < TRAJECTORY_LENGTH; i += 1) {
+      writer.writeFloat(getHeadingValue(headings, i));
+    }
+
+    for (let i = 0; i < TRAJECTORY_LENGTH; i += 1) {
+      writer.writeInt(getBooleanFlag(valids, i));
+    }
+
+    writer.writeFloat(toFiniteOrZero(object.width));
+    writer.writeFloat(toFiniteOrZero(object.length));
+    writer.writeFloat(toFiniteOrZero(object.height));
+
+    const goal = object.goalPosition ?? { x: 0, y: 0, z: 0 };
+    writer.writeFloat(toFiniteOrZero(goal.x));
+    writer.writeFloat(toFiniteOrZero(goal.y));
+    writer.writeFloat(toFiniteOrZero(goal.z));
+
+    writer.writeInt(object.mark_as_expert ? 1 : 0);
+  });
+
+  roads.forEach((road) => {
+    let geometry = Array.isArray(road.geometry)
+      ? road.geometry.map((point) => ({
+          x: toFiniteOrZero(point.x),
+          y: toFiniteOrZero(point.y),
+          z: toFiniteOrZero(point.z)
+        }))
+      : [];
+
+    let roadType = normaliseRoadTypeSource(road.map_element_id);
+    const roadTypeWord = typeof road.type === 'string' ? road.type.toLowerCase() : '';
+
+    if (roadTypeWord === 'lane') {
+      roadType = 2;
+    } else if (roadTypeWord === 'road_edge') {
+      roadType = 15;
+    }
+
+    if (geometry.length > 10 && roadType <= 16) {
+      geometry = simplifyPolylineForBinary(geometry, 0.1);
+    }
+
+    const encodedRoadType = mapRoadTypeCategory(roadType);
+    writer.writeInt(encodedRoadType);
+    writer.writeInt(geometry.length);
+
+    (['x', 'y', 'z'] as const).forEach((axis) => {
+      geometry.forEach((point) => {
+        writer.writeFloat(point[axis]);
+      });
+    });
+
+    writer.writeFloat(toFiniteOrZero(road.width));
+    writer.writeFloat(toFiniteOrZero(road.length));
+    writer.writeFloat(toFiniteOrZero(road.height));
+
+    const goal = road.goalPosition ?? { x: 0, y: 0, z: 0 };
+    writer.writeFloat(toFiniteOrZero(goal.x));
+    writer.writeFloat(toFiniteOrZero(goal.y));
+    writer.writeFloat(toFiniteOrZero(goal.z));
+
+    writer.writeInt(road.mark_as_expert ? 1 : 0);
+  });
+
+  return writer.toUint8Array();
+}
+
+export function buildScenarioBinary(scenario: WaymoScenario, options?: { exportedAt?: string }): Uint8Array {
+  const exportedAt = options?.exportedAt ?? new Date().toISOString();
+  const payload = buildWaymoScenarioExportPayload(scenario, { exportedAt });
+  return buildWaymoBinaryFromPayload(payload);
+}
+
+export function downloadScenarioAsBinary(
+  scenario: WaymoScenario,
+  options?: { fileName?: string }
+): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const exportedAt = new Date().toISOString();
+  const binary = buildScenarioBinary(scenario, { exportedAt });
+  const buffer = new ArrayBuffer(binary.byteLength);
+  new Uint8Array(buffer).set(binary);
+  const blob = new Blob([buffer], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const fileName = sanitizeFileName(options?.fileName ?? scenario.metadata.name ?? 'scenario');
+
+  anchor.href = url;
+  anchor.download = `${fileName}.bin`;
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
 function sanitizeFileName(name: string): string {

@@ -4,7 +4,8 @@ import type { ScenarioExportComparison } from '@/lib/scenarioDiff';
 export interface ExportPreviewModalProps {
   scenarioName: string;
   comparison: ScenarioExportComparison;
-  onConfirm: () => void;
+  onExportJson: () => void;
+  onExportBin: () => void;
   onCancel: () => void;
 }
 
@@ -68,7 +69,7 @@ function renderLimitedList<T>(items: T[], renderItem: (item: T) => JSX.Element):
   return items.slice(0, MAX_LIST_ITEMS).map(renderItem);
 }
 
-function ExportPreviewModal({ scenarioName, comparison, onCancel, onConfirm }: ExportPreviewModalProps) {
+function ExportPreviewModal({ scenarioName, comparison, onCancel, onExportJson, onExportBin }: ExportPreviewModalProps) {
   const { diff } = comparison;
   const beforeStats = buildSnapshotStats(comparison, 'before');
   const afterStats = buildSnapshotStats(comparison, 'after')!;
@@ -107,7 +108,7 @@ function ExportPreviewModal({ scenarioName, comparison, onCancel, onConfirm }: E
         <header className="export-preview__header">
           <div>
             <h2>Preview Export</h2>
-            <p>Review differences before downloading <code>{scenarioName}.json</code>.</p>
+            <p>Review differences before downloading <code>{scenarioName}</code> as JSON or .bin.</p>
           </div>
           <div className="export-preview__summary">
             <span className="export-preview__summary-value">{changeSummary}</span>
@@ -366,7 +367,10 @@ function ExportPreviewModal({ scenarioName, comparison, onCancel, onConfirm }: E
           <button type="button" className="button button--secondary" onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className="button button--primary" onClick={onConfirm}>
+          <button type="button" className="button" onClick={onExportBin}>
+            Download .bin
+          </button>
+          <button type="button" className="button button--primary" onClick={onExportJson}>
             Download JSON
           </button>
         </footer>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import ExportPreviewModal from '@/components/ExportPreviewModal';
-import { downloadScenarioAsJson } from '@/lib/scenarioExporter';
+import { downloadScenarioAsBinary, downloadScenarioAsJson } from '@/lib/scenarioExporter';
 import { compareScenarioForExport, type ScenarioExportComparison } from '@/lib/scenarioDiff';
 import { useScenarioStore, type AgentLabelMode } from '@/state/scenarioStore';
 import type { AgentType, ScenarioAgent } from '@/types/scenario';
@@ -158,13 +158,23 @@ function ScenarioEditorPanel() {
     setExportPreview(comparison);
   }, [activeScenario, activeScenarioBaseline]);
 
-  const handleConfirmExport = useCallback(() => {
+  const handleExportJson = useCallback(() => {
     if (!activeScenario) {
       return;
     }
 
     const draftName = normalizedName || normalizeScenarioName(activeScenario.metadata.name) || 'Scenario';
     downloadScenarioAsJson(activeScenario, { fileName: draftName });
+    setExportPreview(null);
+  }, [activeScenario, normalizedName]);
+
+  const handleExportBin = useCallback(() => {
+    if (!activeScenario) {
+      return;
+    }
+
+    const draftName = normalizedName || normalizeScenarioName(activeScenario.metadata.name) || 'Scenario';
+    downloadScenarioAsBinary(activeScenario, { fileName: draftName });
     setExportPreview(null);
   }, [activeScenario, normalizedName]);
 
@@ -767,7 +777,8 @@ function ScenarioEditorPanel() {
           scenarioName={exportScenarioName}
           comparison={exportPreview}
           onCancel={handleCancelExport}
-          onConfirm={handleConfirmExport}
+          onExportJson={handleExportJson}
+          onExportBin={handleExportBin}
         />
       )}
 
@@ -798,7 +809,7 @@ function ScenarioEditorPanel() {
               className="button"
               onClick={handleRequestExport}
             >
-              Export JSON
+              Export
             </button>
           </div>
         </div>
