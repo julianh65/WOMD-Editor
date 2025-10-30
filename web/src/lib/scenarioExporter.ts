@@ -80,7 +80,7 @@ interface WaymoExportRoad {
 
 export interface WaymoScenarioExportPayload {
   name: string;
-  scenario_id: string;
+  scenario_id: number;
   objects: WaymoExportObject[];
   roads: WaymoExportRoad[];
   tracks_to_predict?: Array<{ track_index: number; difficulty: number }>;
@@ -119,9 +119,49 @@ function toFiniteNumber(value: unknown): number | undefined {
   return undefined;
 }
 
-function toIdentifier(value: string): number | string {
+function toInteger(value: unknown): number | undefined {
   const maybeNumber = toFiniteNumber(value);
-  return maybeNumber ?? value;
+  if (maybeNumber == null) {
+    return undefined;
+  }
+
+  return Number.isInteger(maybeNumber) ? maybeNumber : undefined;
+}
+
+type NumericIdResolver = (sourceId: unknown) => number;
+
+function createNumericIdResolver(): NumericIdResolver {
+  const cache = new Map<string, number>();
+  const used = new Set<number>();
+
+  const reserve = (value: number) => {
+    if (!used.has(value)) {
+      used.add(value);
+    }
+    return value;
+  };
+
+  return (rawId: unknown) => {
+    const existingInteger = toInteger(rawId);
+    if (existingInteger != null) {
+      return reserve(existingInteger);
+    }
+
+    const key = `${typeof rawId}:${String(rawId)}`;
+    const cached = cache.get(key);
+    if (cached != null) {
+      return cached;
+    }
+
+    let generated: number;
+    do {
+      generated = Math.floor(Math.random() * 1_000_000_000) + 1;
+    } while (used.has(generated));
+
+    reserve(generated);
+    cache.set(key, generated);
+    return generated;
+  };
 }
 
 type NormalisedTrajectoryPoint = TrajectoryPoint & { frameIndex: number };
@@ -142,7 +182,7 @@ function normaliseTrajectoryPoints(points: TrajectoryPoint[]): NormalisedTraject
   return normalised;
 }
 
-function mapAgentToWaymoObject(agent: ScenarioAgent): WaymoExportObject {
+function mapAgentToWaymoObject(agent: ScenarioAgent, resolveNumericId: NumericIdResolver): WaymoExportObject {
   const trajectory = normaliseTrajectoryPoints(agent.trajectory);
 
   const position: WaymoVector3[] = trajectory.map((point) => ({
@@ -173,7 +213,7 @@ function mapAgentToWaymoObject(agent: ScenarioAgent): WaymoExportObject {
 
   const valid: boolean[] = trajectory.map((point) => point.valid !== false);
 
-  const id = toIdentifier(agent.id);
+  const id = resolveNumericId(agent.id);
   const length = toFiniteNumber(agent.dimensions?.length);
   const width = toFiniteNumber(agent.dimensions?.width);
   const height = toFiniteNumber(agent.dimensions?.height);
@@ -201,10 +241,10 @@ function mapAgentToWaymoObject(agent: ScenarioAgent): WaymoExportObject {
   };
 }
 
-function mapRoadToWaymoRoad(edge: WaymoScenario['roadEdges'][number]): WaymoExportRoad {
-  const id = toIdentifier(edge.id);
+function mapRoadToWaymoRoad(edge: WaymoScenario['roadEdges'][number], resolveNumericId: NumericIdResolver): WaymoExportRoad {
+  const mapElementId = toInteger(edge.id);
+  const id = resolveNumericId(edge.id);
   const type = edge.type ? ROAD_TYPE_TO_RAW[edge.type] ?? 'other' : undefined;
-  const mapElementId = toFiniteNumber(edge.id);
   const road: WaymoExportRoad = {
     id,
     geometry: edge.points.map((point) => ({
@@ -214,7 +254,7 @@ function mapRoadToWaymoRoad(edge: WaymoScenario['roadEdges'][number]): WaymoExpo
     }))
   };
 
-  if (typeof mapElementId === 'number') {
+  if (mapElementId != null) {
     road.map_element_id = mapElementId;
   }
   if (type) {
@@ -247,7 +287,11 @@ function cloneIfObject<T>(value: T): T {
   }
 }
 
-function buildWaymoMetadata(scenario: WaymoScenario, exportedAt: string): Record<string, unknown> | undefined {
+function buildWaymoMetadata(
+  scenario: WaymoScenario,
+  exportedAt: string,
+  scenarioId: number
+): Record<string, unknown> | undefined {
   const raw = cloneIfObject(scenario.raw) as Record<string, unknown> | undefined;
   const baseMetadata = raw && typeof raw.metadata === 'object'
     ? { ...(raw.metadata as Record<string, unknown>) }
@@ -260,6 +304,16 @@ function buildWaymoMetadata(scenario: WaymoScenario, exportedAt: string): Record
 
   if (scenario.bounds) {
     baseMetadata.bounds = { ...scenario.bounds };
+  }
+
+  baseMetadata.scenario_id = scenarioId;
+
+  if (baseMetadata.scenario && typeof baseMetadata.scenario === 'object') {
+    baseMetadata.scenario = {
+      ...(baseMetadata.scenario as Record<string, unknown>),
+      id: scenarioId,
+      scenario_id: scenarioId
+    };
   }
 
   if (scenario.metadata.frameIntervalMicros != null) {
@@ -275,6 +329,9 @@ function buildWaymoMetadata(scenario: WaymoScenario, exportedAt: string): Record
 
 export function buildWaymoScenarioExportPayload(scenario: WaymoScenario, options?: { exportedAt?: string }): WaymoScenarioExportPayload {
   const exportedAt = options?.exportedAt ?? new Date().toISOString();
+  const resolveNumericId = createNumericIdResolver();
+  const scenarioIdSource = scenario.metadata.id ?? 'scenario';
+  const scenarioId = toInteger(scenarioIdSource) ?? resolveNumericId(scenarioIdSource);
 
   const tlStates = (() => {
     const raw = cloneIfObject(scenario.raw) as Record<string, unknown> | undefined;
@@ -286,12 +343,12 @@ export function buildWaymoScenarioExportPayload(scenario: WaymoScenario, options
 
   return {
     name: scenario.metadata.name ?? 'Scenario',
-    scenario_id: scenario.metadata.id ?? 'untitled',
-    objects: scenario.agents.map(mapAgentToWaymoObject),
-    roads: scenario.roadEdges.map(mapRoadToWaymoRoad),
+    scenario_id: scenarioId,
+    objects: scenario.agents.map((agent) => mapAgentToWaymoObject(agent, resolveNumericId)),
+    roads: scenario.roadEdges.map((edge) => mapRoadToWaymoRoad(edge, resolveNumericId)),
     tracks_to_predict: buildTrackPredictionEntries(scenario.tracksToPredict),
     tl_states: tlStates,
-    metadata: buildWaymoMetadata(scenario, exportedAt)
+    metadata: buildWaymoMetadata(scenario, exportedAt, scenarioId)
   };
 }
 
