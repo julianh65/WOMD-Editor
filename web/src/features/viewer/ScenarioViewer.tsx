@@ -978,7 +978,9 @@ function ScenarioViewer() {
     updateRoadEdgePoints,
     updateRoadEdgePoint,
     insertRoadEdgePoint,
+    splitRoadEdge,
     removeRoadEdgePoint,
+    removeRoadEdge,
     editing
   } = useScenarioStore();
   const {
@@ -1056,6 +1058,12 @@ function ScenarioViewer() {
   const selectedRoadHandle = editingState.selectedRoadHandle;
   const hoveredRoadHandle = editingState.hoveredRoadHandle;
   const hoveredRoadSegment = editingState.hoveredRoadSegment;
+  const selectedRoadEdge = useMemo(() => {
+    if (!selectedRoadId || !activeScenario) {
+      return undefined;
+    }
+    return activeScenario.roadEdges.find((edge) => edge.id === selectedRoadId);
+  }, [activeScenario, selectedRoadId]);
 
   const summary = useMemo(() => {
     if (!activeScenario) {
@@ -1899,31 +1907,79 @@ function ScenarioViewer() {
         return;
       }
 
-      if ((event.key === 'Backspace' || event.key === 'Delete') && selectedRoadHandle) {
-        const edge = activeScenario?.roadEdges.find((candidate) => candidate.id === selectedRoadHandle.roadId);
-        if (!edge) {
+      const isDeleteKey = event.key === 'Backspace' || event.key === 'Delete';
+
+      if (event.shiftKey && event.key.toLowerCase() === 's') {
+        if (!selectedRoadEdge || !selectedRoadHandle || selectedRoadHandle.roadId !== selectedRoadEdge.id) {
           return;
         }
 
-        event.preventDefault();
-        const removed = removeRoadEdgePoint(activeScenarioId, selectedRoadHandle.roadId, selectedRoadHandle.pointIndex);
-        if (removed) {
-          const fallbackIndex = Math.max(
-            0,
-            Math.min(selectedRoadHandle.pointIndex, edge.points.length - 2)
-          );
-          setSelectedRoadHandle({
-            roadId: selectedRoadHandle.roadId,
-            pointIndex: fallbackIndex
-          });
-          const now = Date.now();
-          pushHistoryEntry({
-            id: `road-vertex-delete-${selectedRoadHandle.roadId}-${now.toString(36)}`,
-            label: `Removed vertex from ${edge.type ?? 'road edge'}`,
-            timestamp: now
-          });
+        const pointIndex = selectedRoadHandle.pointIndex;
+        const firstSegmentLength = pointIndex;
+        const secondSegmentLength = selectedRoadEdge.points.length - pointIndex;
+        if (firstSegmentLength >= 2 && secondSegmentLength >= 2) {
+          event.preventDefault();
+          const result = splitRoadEdge(activeScenarioId, selectedRoadEdge.id, pointIndex);
+          if (result) {
+            selectEntity({ kind: 'roadEdge', id: result.created.id });
+            setSelectedRoadHandle({
+              roadId: result.created.id,
+              pointIndex: 0
+            });
+            const now = Date.now();
+            pushHistoryEntry({
+              id: `road-split-${selectedRoadEdge.id}-${pointIndex}-${now.toString(36)}`,
+              label: `Split road segment ${selectedRoadEdge.id} at vertex ${pointIndex}`,
+              timestamp: now
+            });
+          }
         }
         return;
+      }
+
+      if (isDeleteKey) {
+        if (event.shiftKey && selectedRoadHandle) {
+          const edge = activeScenario?.roadEdges.find((candidate) => candidate.id === selectedRoadHandle.roadId);
+          if (!edge) {
+            return;
+          }
+
+          event.preventDefault();
+          const removed = removeRoadEdgePoint(activeScenarioId, selectedRoadHandle.roadId, selectedRoadHandle.pointIndex);
+          if (removed) {
+            const fallbackIndex = Math.max(
+              0,
+              Math.min(selectedRoadHandle.pointIndex, edge.points.length - 2)
+            );
+            setSelectedRoadHandle({
+              roadId: selectedRoadHandle.roadId,
+              pointIndex: fallbackIndex
+            });
+            const now = Date.now();
+            pushHistoryEntry({
+              id: `road-vertex-delete-${selectedRoadHandle.roadId}-${now.toString(36)}`,
+              label: `Removed vertex from ${edge.type ?? 'road edge'}`,
+              timestamp: now
+            });
+          }
+          return;
+        }
+
+        if (selectedRoadId && selectedRoadEdge) {
+          event.preventDefault();
+          const removed = removeRoadEdge(activeScenarioId, selectedRoadId);
+          if (removed) {
+            clearSelection();
+            setSelectedRoadHandle(undefined);
+            const now = Date.now();
+            pushHistoryEntry({
+              id: `road-delete-${selectedRoadId}-${now.toString(36)}`,
+              label: `Deleted road segment ${selectedRoadId}`,
+              timestamp: now
+            });
+          }
+          return;
+        }
       }
 
       if ((event.key === '[' || event.key === ']') && selectedRoadHandle) {
@@ -1954,9 +2010,15 @@ function ScenarioViewer() {
     activeTool,
     activeScenario,
     activeScenarioId,
+    selectedRoadId,
+    selectedRoadEdge,
     selectedRoadHandle,
     removeRoadEdgePoint,
+    splitRoadEdge,
+    removeRoadEdge,
     setSelectedRoadHandle,
+    clearSelection,
+    selectEntity,
     pushHistoryEntry
   ]);
 

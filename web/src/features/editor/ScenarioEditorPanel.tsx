@@ -68,6 +68,7 @@ function ScenarioEditorPanel() {
     setRoadEdgeType,
     updateRoadEdgePoint,
     insertRoadEdgePoint,
+    splitRoadEdge,
     removeRoadEdgePoint,
     removeRoadEdge,
     editing
@@ -77,12 +78,7 @@ function ScenarioEditorPanel() {
     selectEntity,
     clearSelection,
     setSelectedRoadHandle,
-    setHoveredRoadHandle,
     pushHistoryEntry,
-    undo,
-    redo,
-    canUndo,
-    canRedo,
     setRotationMode
   } = editing;
   const [localName, setLocalName] = useState('');
@@ -140,14 +136,6 @@ function ScenarioEditorPanel() {
       timestamp: now
     });
   }, [activeScenario, activeScenarioId, normalizedName, updateScenario, pushHistoryEntry]);
-
-  const handleUndo = useCallback(() => {
-    undo();
-  }, [undo]);
-
-  const handleRedo = useCallback(() => {
-    redo();
-  }, [redo]);
 
   const handleRequestExport = useCallback(() => {
     if (!activeScenario) {
@@ -222,14 +210,6 @@ function ScenarioEditorPanel() {
       ? editingState.selectedRoadHandle.pointIndex
       : undefined;
   }, [editingState.selectedRoadHandle, selectedRoadEdge]);
-  const hoveredRoadVertexIndex = useMemo(() => {
-    if (!selectedRoadEdge) {
-      return undefined;
-    }
-    return editingState.hoveredRoadHandle?.roadId === selectedRoadEdge.id
-      ? editingState.hoveredRoadHandle.pointIndex
-      : undefined;
-  }, [editingState.hoveredRoadHandle, selectedRoadEdge]);
   const selectedRoadVertex = useMemo(() => {
     if (!selectedRoadEdge || typeof selectedRoadVertexIndex !== 'number') {
       return undefined;
@@ -566,17 +546,6 @@ function ScenarioEditorPanel() {
     }
   }, [activeScenarioId, selectedRoadEdge, setRoadEdgeType, pushHistoryEntry]);
 
-  const handleSelectRoadVertex = useCallback((index: number) => {
-    if (!selectedRoadEdge) {
-      return;
-    }
-
-    setSelectedRoadHandle({
-      roadId: selectedRoadEdge.id,
-      pointIndex: index
-    });
-  }, [selectedRoadEdge, setSelectedRoadHandle]);
-
   const handleRoadVertexDraftChange = useCallback((field: 'x' | 'y', value: string) => {
     setRoadVertexDraft((prev) => ({
       ...prev,
@@ -714,23 +683,47 @@ function ScenarioEditorPanel() {
     pushHistoryEntry
   ]);
 
-  const handleRoadVertexHover = useCallback((index?: number) => {
-    if (!selectedRoadEdge) {
+  const handleSplitRoadEdge = useCallback(() => {
+    if (!activeScenarioId || !selectedRoadEdge || typeof selectedRoadVertexIndex !== 'number') {
       return;
     }
 
-    if (typeof index === 'number') {
-      setHoveredRoadHandle({
-        roadId: selectedRoadEdge.id,
-        pointIndex: index
-      });
-    } else {
-      setHoveredRoadHandle(undefined);
+    const result = splitRoadEdge(activeScenarioId, selectedRoadEdge.id, selectedRoadVertexIndex);
+    if (!result) {
+      return;
     }
-  }, [selectedRoadEdge, setHoveredRoadHandle]);
+
+    selectEntity({ kind: 'roadEdge', id: result.created.id });
+    setSelectedRoadHandle({
+      roadId: result.created.id,
+      pointIndex: 0
+    });
+    const now = Date.now();
+    pushHistoryEntry({
+      id: `road-split-${selectedRoadEdge.id}-${selectedRoadVertexIndex}-${now.toString(36)}`,
+      label: `Split road segment ${selectedRoadEdge.id} at vertex ${selectedRoadVertexIndex}`,
+      timestamp: now
+    });
+  }, [
+    activeScenarioId,
+    selectedRoadEdge,
+    selectedRoadVertexIndex,
+    splitRoadEdge,
+    selectEntity,
+    setSelectedRoadHandle,
+    pushHistoryEntry
+  ]);
 
   const canEditRoadVertex = Boolean(selectedRoadEdge && typeof selectedRoadVertexIndex === 'number');
   const canDeleteRoadVertex = Boolean(canEditRoadVertex && (selectedRoadEdge?.points.length ?? 0) > 2);
+  const canSplitRoadEdge = useMemo(() => {
+    if (!selectedRoadEdge || typeof selectedRoadVertexIndex !== 'number') {
+      return false;
+    }
+    const firstSegmentLength = selectedRoadVertexIndex;
+    const secondSegmentLength = selectedRoadEdge.points.length - selectedRoadVertexIndex;
+    return firstSegmentLength >= 2 && secondSegmentLength >= 2;
+  }, [selectedRoadEdge, selectedRoadVertexIndex]);
   const roadVertexCount = selectedRoadEdge?.points.length ?? 0;
 
   const handleDeleteRoadEdge = useCallback(() => {
@@ -786,24 +779,6 @@ function ScenarioEditorPanel() {
         <div className="editor-panel__header">
           <h3>Scenario Details</h3>
           <div className="editor-panel__header-actions">
-            <button
-              type="button"
-              className="button button--secondary"
-              onClick={handleUndo}
-              disabled={!canUndo}
-              title="Undo is still a work in progress"
-            >
-              Undo (doesn't work)
-            </button>
-            <button
-              type="button"
-              className="button button--secondary"
-              onClick={handleRedo}
-              disabled={!canRedo}
-              title="Redo is still a work in progress"
-            >
-              Redo (doesn't work)
-            </button>
             <button
               type="button"
               className="button"
@@ -1082,77 +1057,53 @@ function ScenarioEditorPanel() {
                   <span>{selectedRoadEdge.points.length}</span>
                 </li>
               </ul>
-              <div className="selection-road-panel">
-                <label>
-                  <span>Road Type</span>
-                  <select value={selectedRoadEdge.type ?? 'OTHER'} onChange={handleRoadTypeChange}>
-                    {ROAD_TYPE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="selection-road-vertices">
-                  <div className="selection-road-vertices__header">
-                    <span>Vertices</span>
-                    <span>{roadVertexCount}</span>
-                  </div>
-                  {roadVertexCount === 0 ? (
-                    <p className="selection-road-vertices__empty">Road segment has no vertices.</p>
-                  ) : (
-                    <ul className="selection-road-vertices__list">
-                      {selectedRoadEdge.points.map((point, index) => {
-                        const classes = ['selection-road-vertices__item'];
-                        if (index === selectedRoadVertexIndex) {
-                          classes.push('selection-road-vertices__item--active');
-                        } else if (index === hoveredRoadVertexIndex) {
-                          classes.push('selection-road-vertices__item--hovered');
-                        }
-                        return (
-                          <li key={`${selectedRoadEdge.id}-${index}`} className={classes.join(' ')}>
-                            <button
-                              type="button"
-                              onClick={() => handleSelectRoadVertex(index)}
-                              onMouseEnter={() => handleRoadVertexHover(index)}
-                              onMouseLeave={() => handleRoadVertexHover(undefined)}
-                            >
-                              <span>#{index.toString().padStart(2, '0')}</span>
-                              <span>{point.x.toFixed(2)}, {point.y.toFixed(2)}</span>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                  <div className="selection-road-vertex-editor">
-                    <div className="selection-road-vertex-editor__inputs">
-                      <label>
-                        <span>X (m)</span>
-                        <input
-                          type="number"
-                          step="0.05"
-                          value={roadVertexDraft.x}
-                          onChange={(event) => handleRoadVertexDraftChange('x', event.target.value)}
-                          onBlur={commitRoadVertexDraft}
-                          onKeyDown={handleRoadVertexInputKeyDown}
-                          placeholder="0.00"
-                          disabled={!canEditRoadVertex}
-                        />
-                      </label>
-                      <label>
-                        <span>Y (m)</span>
-                        <input
-                          type="number"
-                          step="0.05"
-                          value={roadVertexDraft.y}
-                          onChange={(event) => handleRoadVertexDraftChange('y', event.target.value)}
-                          onBlur={commitRoadVertexDraft}
-                          onKeyDown={handleRoadVertexInputKeyDown}
-                          placeholder="0.00"
-                          disabled={!canEditRoadVertex}
-                        />
-                      </label>
+                <div className="selection-road-panel">
+                  <label>
+                    <span>Road Type</span>
+                    <select value={selectedRoadEdge.type ?? 'OTHER'} onChange={handleRoadTypeChange}>
+                      {ROAD_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="selection-road-vertices">
+                    <div className="selection-road-vertices__header">
+                      <span>Vertices</span>
+                      <span>{roadVertexCount}</span>
+                    </div>
+                    {roadVertexCount === 0 && (
+                      <p className="selection-road-vertices__empty">Road segment has no vertices.</p>
+                    )}
+                    <div className="selection-road-vertex-editor">
+                      <div className="selection-road-vertex-editor__inputs">
+                        <label>
+                          <span>X (m)</span>
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={roadVertexDraft.x}
+                            onChange={(event) => handleRoadVertexDraftChange('x', event.target.value)}
+                            onBlur={commitRoadVertexDraft}
+                            onKeyDown={handleRoadVertexInputKeyDown}
+                            placeholder="0.00"
+                            disabled={!canEditRoadVertex}
+                          />
+                        </label>
+                        <label>
+                          <span>Y (m)</span>
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={roadVertexDraft.y}
+                            onChange={(event) => handleRoadVertexDraftChange('y', event.target.value)}
+                            onBlur={commitRoadVertexDraft}
+                            onKeyDown={handleRoadVertexInputKeyDown}
+                            placeholder="0.00"
+                            disabled={!canEditRoadVertex}
+                          />
+                        </label>
                     </div>
                     <div className="selection-road-vertex-editor__actions">
                       <button
@@ -1183,9 +1134,21 @@ function ScenarioEditorPanel() {
                       </div>
                       <button
                         type="button"
+                        className="button button--secondary"
+                        onClick={handleSplitRoadEdge}
+                        disabled={!canSplitRoadEdge}
+                        title="Shortcut: Shift+S"
+                        data-hotkey="Shift+S"
+                      >
+                        Split at Vertex
+                      </button>
+                      <button
+                        type="button"
                         className="button button--danger"
                         onClick={handleRemoveRoadVertex}
                         disabled={!canDeleteRoadVertex}
+                        title="Shortcut: Shift+Delete / Shift+Backspace"
+                        data-hotkey="Shift+Delete"
                       >
                         Delete Vertex
                       </button>
@@ -1196,7 +1159,13 @@ function ScenarioEditorPanel() {
                   </p>
                 </div>
                 <p className="selection-note">Segment type hints downstream renderers and exporters.</p>
-                <button type="button" className="button button--danger" onClick={handleDeleteRoadEdge}>
+                <button
+                  type="button"
+                  className="button button--danger"
+                  onClick={handleDeleteRoadEdge}
+                  title="Shortcut: Delete or Backspace"
+                  data-hotkey="Delete"
+                >
                   Delete Road Segment
                 </button>
               </div>

@@ -776,6 +776,15 @@ interface ScenarioStoreValue {
     point: RoadDraftPoint,
     options?: { afterIndex?: number }
   ) => number | undefined;
+  splitRoadEdge: (
+    scenarioId: string,
+    roadId: string,
+    splitIndex: number
+  ) => {
+    retained: RoadEdge;
+    created: RoadEdge;
+    createdIndex: number;
+  } | undefined;
   removeRoadEdgePoint: (
     scenarioId: string,
     roadId: string,
@@ -2049,6 +2058,68 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     return insertedIndex;
   }, [applyScenarioUpdate]);
 
+  const splitRoadEdge = useCallback<ScenarioStoreValue['splitRoadEdge']>((scenarioId, roadId, splitIndex) => {
+    let result: ReturnType<ScenarioStoreValue['splitRoadEdge']>;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const edgeIndex = scenario.roadEdges.findIndex((edge) => edge.id === roadId);
+      if (edgeIndex === -1) {
+        return scenario;
+      }
+
+      if (!Number.isInteger(splitIndex)) {
+        return scenario;
+      }
+
+      const existing = scenario.roadEdges[edgeIndex];
+      if (splitIndex <= 0 || splitIndex >= existing.points.length) {
+        return scenario;
+      }
+
+      const firstPoints = existing.points.slice(0, splitIndex);
+      const secondPoints = existing.points.slice(splitIndex);
+      const sanitisedFirst = sanitiseRoadPoints(firstPoints);
+      const sanitisedSecond = sanitiseRoadPoints(secondPoints);
+
+      if (
+        sanitisedFirst.length !== firstPoints.length
+        || sanitisedSecond.length !== secondPoints.length
+        || sanitisedFirst.length < 2
+        || sanitisedSecond.length < 2
+      ) {
+        return scenario;
+      }
+
+      const retained: RoadEdge = {
+        ...existing,
+        points: sanitisedFirst
+      };
+
+      const created: RoadEdge = {
+        id: createResourceId('road'),
+        type: existing.type,
+        points: sanitisedSecond
+      };
+
+      const nextEdges = [...scenario.roadEdges];
+      nextEdges.splice(edgeIndex, 1, retained);
+      nextEdges.splice(edgeIndex + 1, 0, created);
+
+      result = {
+        retained,
+        created,
+        createdIndex: edgeIndex + 1
+      };
+
+      return {
+        ...scenario,
+        roadEdges: nextEdges
+      };
+    });
+
+    return result;
+  }, [applyScenarioUpdate]);
+
   const removeRoadEdgePoint = useCallback<ScenarioStoreValue['removeRoadEdgePoint']>((scenarioId, roadId, pointIndex) => {
     let didRemove = false;
 
@@ -2234,6 +2305,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     updateRoadEdgePoints,
     updateRoadEdgePoint,
     insertRoadEdgePoint,
+    splitRoadEdge,
     removeRoadEdgePoint,
     setRoadEdgeType,
     removeRoadEdge,
@@ -2275,6 +2347,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     updateRoadEdgePoints,
     updateRoadEdgePoint,
     insertRoadEdgePoint,
+    splitRoadEdge,
     removeRoadEdgePoint,
     setRoadEdgeType,
     removeRoadEdge,
