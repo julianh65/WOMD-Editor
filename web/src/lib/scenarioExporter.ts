@@ -38,7 +38,11 @@ function cloneAgents(agents: ScenarioAgent[]): ScenarioAgent[] {
 function cloneRoadEdges(edges: WaymoScenario['roadEdges']): WaymoScenario['roadEdges'] {
   return edges.map((edge) => ({
     ...edge,
-    points: edge.points.map((point) => ({ x: point.x, y: point.y }))
+    points: edge.points.map((point) => ({
+      x: point.x,
+      y: point.y,
+      ...(typeof point.z === 'number' ? { z: point.z } : {})
+    }))
   }));
 }
 
@@ -250,7 +254,7 @@ function mapRoadToWaymoRoad(edge: WaymoScenario['roadEdges'][number], resolveNum
     geometry: edge.points.map((point) => ({
       x: point.x,
       y: point.y,
-      z: 0
+      z: typeof point.z === 'number' && Number.isFinite(point.z) ? point.z : 0
     }))
   };
 

@@ -8,7 +8,7 @@ function AppLayout() {
   return (
     <div className="app-shell">
       <div className="app-banner app-banner--wip">
-        <strong>Work in progress:</strong> this editor is experimental and still evolving.
+        <strong>Work in progress</strong>
       </div>
       <div className="app-body">
         <ScenarioSidebar />

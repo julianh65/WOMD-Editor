@@ -56,6 +56,7 @@ export interface TrajectoryDraft {
 export interface RoadDraftPoint {
   x: number;
   y: number;
+  z?: number;
 }
 
 export interface RoadDraft {
@@ -80,6 +81,8 @@ export interface EditingState {
   mode: EditingMode;
   activeTool: EditingTool;
   rotationMode: 'path' | 'pose';
+  roadDraftElevation: number;
+  colorRoadVerticesByElevation: boolean;
   hoveredEntity?: EditingEntityRef;
   selectedEntity?: EditingEntityRef;
   hoveredRoadHandle?: RoadHandleRef;
@@ -96,6 +99,8 @@ function createInitialEditingState(): EditingState {
     mode: 'trajectory',
     activeTool: 'trajectory-edit',
     rotationMode: 'path',
+    roadDraftElevation: 0,
+    colorRoadVerticesByElevation: false,
     hoveredEntity: undefined,
     selectedEntity: undefined,
     hoveredRoadHandle: undefined,
@@ -359,6 +364,7 @@ function findFirstValidPoint(points: TrajectoryPoint[]): TrajectoryPoint | undef
 }
 
 const MAX_HISTORY_ENTRIES = 50;
+const BASIC_UNDO_LIMIT = 3;
 
 function cloneScenarioState(scenario: WaymoScenario): WaymoScenario {
   let clone: WaymoScenario;
@@ -375,13 +381,27 @@ function cloneScenarioState(scenario: WaymoScenario): WaymoScenario {
   return clone;
 }
 
+function serializeScenarioState(scenario: WaymoScenario | undefined): string {
+  if (!scenario) {
+    return '';
+  }
+
+  try {
+    return JSON.stringify(scenario);
+  } catch (error) {
+    console.error('Failed to serialize scenario', error);
+    return '';
+  }
+}
+
 function sanitiseRoadPoint(point: RoadDraftPoint): RoadDraftPoint | undefined {
   const x = Number(point.x);
   const y = Number(point.y);
+  const z = typeof point.z === 'number' && Number.isFinite(point.z) ? point.z : undefined;
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     return undefined;
   }
-  return { x, y };
+  return typeof z === 'number' ? { x, y, z } : { x, y };
 }
 
 function sanitiseRoadPoints(points: RoadDraftPoint[]): RoadDraftPoint[] {
@@ -398,7 +418,22 @@ function areRoadPointsEqual(a: RoadDraftPoint[], b: RoadDraftPoint[]) {
   for (let index = 0; index < a.length; index += 1) {
     const current = a[index];
     const candidate = b[index];
-    if (Math.abs(current.x - candidate.x) > 1e-6 || Math.abs(current.y - candidate.y) > 1e-6) {
+    const zEqual = (() => {
+      const hasCurrentZ = typeof current.z === 'number';
+      const hasCandidateZ = typeof candidate.z === 'number';
+      if (!hasCurrentZ && !hasCandidateZ) {
+        return true;
+      }
+      if (hasCurrentZ && hasCandidateZ) {
+        return Math.abs((current.z as number) - (candidate.z as number)) <= 1e-6;
+      }
+      return false;
+    })();
+    if (
+      Math.abs(current.x - candidate.x) > 1e-6
+      || Math.abs(current.y - candidate.y) > 1e-6
+      || !zEqual
+    ) {
       return false;
     }
   }
@@ -665,6 +700,19 @@ interface ScenarioHistoryState {
   redo: WaymoScenario[];
 }
 
+interface BasicUndoSnapshot {
+  serialized: string;
+  name: string;
+  source: ScenarioSource;
+}
+
+interface BasicUndoBucket {
+  history: BasicUndoSnapshot[];
+  lastSerialized?: string;
+  lastName?: string;
+  lastSource?: ScenarioSource;
+}
+
 export interface ScenarioResource {
   id: string;
   name: string;
@@ -678,6 +726,8 @@ export interface EditingStoreValue {
   setMode: (mode: EditingMode) => void;
   setTool: (tool: EditingTool) => void;
   setRotationMode: (mode: 'path' | 'pose') => void;
+  setRoadDraftElevation: (value: number) => void;
+  setColorRoadVerticesByElevation: (enabled: boolean) => void;
   hoverEntity: (ref?: EditingEntityRef) => void;
   selectEntity: (ref?: EditingEntityRef) => void;
   clearSelection: () => void;
@@ -741,7 +791,12 @@ interface ScenarioStoreValue {
   removeAllAgents: (scenarioId: string) => boolean;
   spawnVehicleAgent: (scenarioId: string) => ScenarioAgent | undefined;
   removeScenario: (id: string) => void;
-  loadScenarioFromJson: (payload: { json: unknown; name?: string; source?: ScenarioSource }) => ScenarioResource;
+  loadScenarioFromJson: (payload: {
+    json: unknown;
+    name?: string;
+    source?: ScenarioSource;
+    preserveBasicUndoHistory?: boolean;
+  }) => ScenarioResource;
   createBlankScenario: (name?: string) => ScenarioResource;
   updateScenario: (id: string, updater: (current: WaymoScenario) => WaymoScenario) => void;
   updateAgentStartPose: (
@@ -796,6 +851,8 @@ interface ScenarioStoreValue {
     type: RoadEdge['type']
   ) => boolean;
   removeRoadEdge: (scenarioId: string, roadId: string) => boolean;
+  basicUndoStepsRemaining: number;
+  basicUndo: () => boolean;
   editing: EditingStoreValue;
 }
 
@@ -820,7 +877,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   const [agentLabelMode, setAgentLabelModeState] = useState<AgentLabelMode>('index');
   const [editingState, setEditingState] = useState<EditingState>(() => createInitialEditingState());
   const [scenarioHistory, setScenarioHistory] = useState<Record<string, ScenarioHistoryState>>({});
+  const [basicUndoBuckets, setBasicUndoBuckets] = useState<Record<string, BasicUndoBucket>>({});
   const isApplyingHistoryRef = useRef(false);
+  const isApplyingBasicUndoRef = useRef(false);
 
   const restoreScenarioSnapshot = useCallback((scenarioId: string, snapshot: WaymoScenario) => {
     const nextScenario = cloneScenarioState(snapshot);
@@ -845,6 +904,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
 
   const applyScenarioUpdate = useCallback((scenarioId: string, mutator: (scenario: WaymoScenario) => WaymoScenario | undefined | null) => {
     let previousSnapshot: WaymoScenario | undefined;
+    let previousSnapshotMeta: { name: string; source: ScenarioSource } | undefined;
     let didUpdate = false;
 
     setScenarios((prev) => prev.map((resource) => {
@@ -860,7 +920,13 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       }
 
       if (!isApplyingHistoryRef.current) {
-        previousSnapshot = previousSnapshot ?? cloneScenarioState(currentScenario);
+        if (!previousSnapshot) {
+          previousSnapshot = cloneScenarioState(currentScenario);
+          previousSnapshotMeta = {
+            name: resource.name,
+            source: resource.source
+          };
+        }
       }
 
       didUpdate = true;
@@ -886,6 +952,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
           }
         };
       });
+
     }
 
     return didUpdate;
@@ -985,7 +1052,48 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     });
   }, []);
 
-  const loadScenarioFromJson = useCallback<ScenarioStoreValue['loadScenarioFromJson']>(({ json, name, source = 'uploaded' }) => {
+  const applyLoadedScenarioResource = useCallback((resource: ScenarioResource, options?: { preserveBasicUndoHistory?: boolean }) => {
+    upsertScenario(resource);
+    setActiveScenarioId(resource.id);
+    internalSetActiveFrameIndex(0);
+    setVisibleTrajectoryIds(new Set(resource.scenario.agents.map((agent) => agent.id)));
+    setIsPlaying(false);
+    setShowAgentLabels(true);
+    setScenarioHistory((prev) => ({
+      ...prev,
+      [resource.id]: {
+        undo: [],
+        redo: []
+      }
+    }));
+    const serialized = serializeScenarioState(resource.scenario);
+    setBasicUndoBuckets((prev) => {
+      const existing = prev[resource.id];
+      const history = options?.preserveBasicUndoHistory ? existing?.history ?? [] : [];
+      return {
+        ...prev,
+        [resource.id]: {
+          history,
+          lastSerialized: serialized,
+          lastName: resource.name,
+          lastSource: resource.source
+        }
+      };
+    });
+    setEditingState(() => createInitialEditingState());
+  }, [
+    upsertScenario,
+    setActiveScenarioId,
+    internalSetActiveFrameIndex,
+    setVisibleTrajectoryIds,
+    setIsPlaying,
+    setShowAgentLabels,
+    setScenarioHistory,
+    setBasicUndoBuckets,
+    setEditingState
+  ]);
+
+  const loadScenarioFromJson = useCallback<ScenarioStoreValue['loadScenarioFromJson']>(({ json, name, source = 'uploaded', preserveBasicUndoHistory = false }) => {
     const parsed = parseScenario(json);
     const baselineSnapshot = cloneScenarioState(parsed);
 
@@ -997,22 +1105,9 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       baseline: baselineSnapshot
     };
 
-    upsertScenario(resource);
-    setActiveScenarioId(resource.id);
-    internalSetActiveFrameIndex(0);
-    setVisibleTrajectoryIds(new Set(parsed.agents.map((agent) => agent.id)));
-    setIsPlaying(false);
-    setShowAgentLabels(true);
-    setScenarioHistory((prev) => ({
-      ...prev,
-      [resource.id]: {
-        undo: [],
-        redo: []
-      }
-    }));
-
+    applyLoadedScenarioResource(resource, { preserveBasicUndoHistory });
     return resource;
-  }, [upsertScenario]);
+  }, [applyLoadedScenarioResource]);
 
   const createBlankScenario = useCallback<ScenarioStoreValue['createBlankScenario']>((name) => {
     const scenario: WaymoScenario = {
@@ -1073,6 +1168,13 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       const { [id]: _removed, ...rest } = prev;
       return rest;
     });
+    setBasicUndoBuckets((prev) => {
+      if (!(id in prev)) {
+        return prev;
+      }
+      const { [id]: _removed, ...rest } = prev;
+      return rest;
+    });
   }, []);
 
   const activeScenarioResource = useMemo(
@@ -1081,9 +1183,12 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   );
   const activeScenario = activeScenarioResource?.scenario;
   const activeScenarioBaseline = activeScenarioResource?.baseline;
+  const activeScenarioName = activeScenarioResource?.name;
+  const activeScenarioSource = activeScenarioResource?.source;
   const activeScenarioHistory = scenarioHistory[activeScenarioId ?? ''];
   const canUndo = (activeScenarioHistory?.undo.length ?? 0) > 0 && editingState.history.undoStack.length > 0;
   const canRedo = (activeScenarioHistory?.redo.length ?? 0) > 0 && editingState.history.redoStack.length > 0;
+  const basicUndoStepsRemaining = activeScenarioId ? (basicUndoBuckets[activeScenarioId]?.history.length ?? 0) : 0;
 
   useEffect(() => {
     internalSetActiveFrameIndex(0);
@@ -1101,6 +1206,80 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     setIsPlaying(false);
     setShowAgentLabels(Boolean(activeScenario));
   }, [activeScenarioId, activeScenario]);
+
+  useEffect(() => {
+    if (!activeScenarioId || !activeScenario) {
+      return undefined;
+    }
+
+    const handlePointerCommit = () => {
+      if (isApplyingBasicUndoRef.current) {
+        return;
+      }
+
+      const currentSerialized = serializeScenarioState(activeScenario);
+      if (!currentSerialized) {
+        return;
+      }
+
+      const scenarioName = activeScenarioName ?? activeScenario.metadata.name ?? 'Scenario';
+      const scenarioSource = activeScenarioSource ?? 'uploaded';
+
+      setBasicUndoBuckets((prev) => {
+        const bucket = prev[activeScenarioId];
+        if (!bucket) {
+          return {
+            ...prev,
+            [activeScenarioId]: {
+              history: [],
+              lastSerialized: currentSerialized,
+              lastName: scenarioName,
+              lastSource: scenarioSource
+            }
+          };
+        }
+
+        if (!bucket.lastSerialized) {
+          return {
+            ...prev,
+            [activeScenarioId]: {
+              history: bucket.history,
+              lastSerialized: currentSerialized,
+              lastName: scenarioName,
+              lastSource: scenarioSource
+            }
+          };
+        }
+
+        if (bucket.lastSerialized === currentSerialized) {
+          return prev;
+        }
+
+        const snapshot: BasicUndoSnapshot = {
+          serialized: bucket.lastSerialized,
+          name: bucket.lastName ?? scenarioName,
+          source: bucket.lastSource ?? scenarioSource
+        };
+        const history = [...bucket.history, snapshot];
+        if (history.length > BASIC_UNDO_LIMIT) {
+          history.shift();
+        }
+
+        return {
+          ...prev,
+          [activeScenarioId]: {
+            history,
+            lastSerialized: currentSerialized,
+            lastName: scenarioName,
+            lastSource: scenarioSource
+          }
+        };
+      });
+    };
+
+    window.addEventListener('mouseup', handlePointerCommit);
+    return () => window.removeEventListener('mouseup', handlePointerCommit);
+  }, [activeScenarioId, activeScenario, activeScenarioName, activeScenarioSource, setBasicUndoBuckets]);
 
   useEffect(() => {
     const frameCount = activeScenario?.frames.length ?? 0;
@@ -1475,6 +1654,33 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     }));
   }, []);
 
+  const setRoadDraftElevation = useCallback((value: number) => {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    setEditingState((prev) => {
+      if (Math.abs(prev.roadDraftElevation - value) < 1e-6) {
+        return prev;
+      }
+      return {
+        ...prev,
+        roadDraftElevation: value
+      };
+    });
+  }, []);
+
+  const setColorRoadVerticesByElevation = useCallback((enabled: boolean) => {
+    setEditingState((prev) => {
+      if (prev.colorRoadVerticesByElevation === enabled) {
+        return prev;
+      }
+      return {
+        ...prev,
+        colorRoadVerticesByElevation: enabled
+      };
+    });
+  }, []);
+
   const hoverEntity = useCallback((ref?: EditingEntityRef) => {
     setEditingState((prev) => ({
       ...prev,
@@ -1571,17 +1777,25 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
   }, []);
 
   const beginRoadDraft = useCallback((input: { scenarioId: string; type?: RoadEdge['type']; startPoint?: RoadDraftPoint }) => {
-    setEditingState((prev) => ({
-      ...prev,
-      mode: 'road',
-      activeTool: 'road-add',
-      roadDraft: {
-        id: createResourceId('road-draft'),
-        scenarioId: input.scenarioId,
-        type: input.type ?? 'ROAD_EDGE',
-        points: input.startPoint ? [input.startPoint] : []
-      }
-    }));
+    setEditingState((prev) => {
+      const defaultZ = Number.isFinite(prev.roadDraftElevation) ? prev.roadDraftElevation : 0;
+      const makePoint = (point: RoadDraftPoint): RoadDraftPoint => {
+        const z = typeof point.z === 'number' && Number.isFinite(point.z) ? point.z : defaultZ;
+        return Number.isFinite(z) ? { x: point.x, y: point.y, z } : { x: point.x, y: point.y };
+      };
+
+      return {
+        ...prev,
+        mode: 'road',
+        activeTool: 'road-add',
+        roadDraft: {
+          id: createResourceId('road-draft'),
+          scenarioId: input.scenarioId,
+          type: input.type ?? 'ROAD_EDGE',
+          points: input.startPoint ? [makePoint(input.startPoint)] : []
+        }
+      };
+    });
   }, []);
 
   const appendRoadDraftPoint = useCallback((point: RoadDraftPoint) => {
@@ -1590,11 +1804,15 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
         return prev;
       }
 
+      const defaultZ = Number.isFinite(prev.roadDraftElevation) ? prev.roadDraftElevation : 0;
+      const z = typeof point.z === 'number' && Number.isFinite(point.z) ? point.z : defaultZ;
+      const nextPoint = Number.isFinite(z) ? { x: point.x, y: point.y, z } : { x: point.x, y: point.y };
+
       return {
         ...prev,
         roadDraft: {
           ...prev.roadDraft,
-          points: [...prev.roadDraft.points, point]
+          points: [...prev.roadDraft.points, nextPoint]
         }
       };
     });
@@ -1982,9 +2200,17 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
 
       const currentPoint = existing.points[pointIndex];
       const epsilon = 1e-6;
+      const hasCurrentZ = typeof currentPoint.z === 'number';
+      const hasNextZ = typeof sanitisedPoint.z === 'number';
+      const zUnchanged = !hasCurrentZ && !hasNextZ
+        ? true
+        : hasCurrentZ && hasNextZ
+          ? Math.abs((currentPoint.z as number) - (sanitisedPoint.z as number)) < epsilon
+          : false;
       if (
         Math.abs(currentPoint.x - sanitisedPoint.x) < epsilon
         && Math.abs(currentPoint.y - sanitisedPoint.y) < epsilon
+        && zUnchanged
       ) {
         return scenario;
       }
@@ -2208,6 +2434,73 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     return didRemove;
   }, [applyScenarioUpdate]);
 
+  const basicUndo = useCallback(() => {
+    if (!activeScenarioId) {
+      return false;
+    }
+
+    const preservedMode = editingState.mode;
+
+    let snapshot: BasicUndoSnapshot | undefined;
+    setBasicUndoBuckets((prev) => {
+      const bucket = prev[activeScenarioId];
+      if (!bucket || bucket.history.length === 0) {
+        return prev;
+      }
+      snapshot = bucket.history[bucket.history.length - 1];
+      const nextHistory = bucket.history.slice(0, -1);
+      return {
+        ...prev,
+        [activeScenarioId]: {
+          history: nextHistory,
+          lastSerialized: snapshot!.serialized,
+          lastName: snapshot!.name,
+          lastSource: snapshot!.source
+        }
+      };
+    });
+
+    if (!snapshot) {
+      return false;
+    }
+
+    let parsedScenario: WaymoScenario | undefined;
+    try {
+      parsedScenario = JSON.parse(snapshot.serialized) as WaymoScenario;
+    } catch (error) {
+      console.error('Failed to parse undo snapshot', error);
+      return false;
+    }
+
+    const scenarioClone = cloneScenarioState(parsedScenario);
+    const resource: ScenarioResource = {
+      id: activeScenarioId,
+      name: snapshot.name,
+      source: snapshot.source,
+      scenario: scenarioClone,
+      baseline: cloneScenarioState(scenarioClone)
+    };
+
+    isApplyingBasicUndoRef.current = true;
+    try {
+      applyLoadedScenarioResource(resource, { preserveBasicUndoHistory: true });
+    } finally {
+      isApplyingBasicUndoRef.current = false;
+    }
+
+    setEditingState((prev) => {
+      if (prev.mode === preservedMode) {
+        return prev;
+      }
+      return {
+        ...prev,
+        mode: preservedMode
+      };
+    });
+
+    return true;
+  }, [activeScenarioId, applyLoadedScenarioResource, editingState.mode, setBasicUndoBuckets, setEditingState]);
+
   useEffect(() => {
     resetEditing();
   }, [activeScenarioId, resetEditing]);
@@ -2217,6 +2510,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     setMode: setEditingMode,
     setTool: setEditingTool,
     setRotationMode,
+    setRoadDraftElevation,
+    setColorRoadVerticesByElevation,
     hoverEntity,
     selectEntity,
     clearSelection,
@@ -2244,6 +2539,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     setEditingMode,
     setEditingTool,
     setRotationMode,
+    setRoadDraftElevation,
+    setColorRoadVerticesByElevation,
     hoverEntity,
     selectEntity,
     clearSelection,
@@ -2309,6 +2606,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     removeRoadEdgePoint,
     setRoadEdgeType,
     removeRoadEdge,
+    basicUndoStepsRemaining,
+    basicUndo,
     editing: editingValue
   }), [
     scenarios,
@@ -2351,6 +2650,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     removeRoadEdgePoint,
     setRoadEdgeType,
     removeRoadEdge,
+    basicUndoStepsRemaining,
+    basicUndo,
     editingValue
   ]);
 

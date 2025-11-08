@@ -29,7 +29,7 @@ export interface ScenarioAgent {
 
 export interface RoadEdge {
   id: string;
-  points: Array<Pick<TrajectoryPoint, 'x' | 'y'>>;
+  points: Array<Pick<TrajectoryPoint, 'x' | 'y' | 'z'>>;
   type?: 'ROAD_LINE' | 'ROAD_EDGE' | 'CROSSWALK' | 'OTHER';
 }
 

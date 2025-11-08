@@ -66,11 +66,14 @@ function ScenarioEditorPanel() {
     removeAllAgents,
     spawnVehicleAgent,
     setRoadEdgeType,
+    updateRoadEdgePoints,
     updateRoadEdgePoint,
     insertRoadEdgePoint,
     splitRoadEdge,
     removeRoadEdgePoint,
     removeRoadEdge,
+    basicUndo,
+    basicUndoStepsRemaining,
     editing
   } = useScenarioStore();
   const {
@@ -79,7 +82,8 @@ function ScenarioEditorPanel() {
     clearSelection,
     setSelectedRoadHandle,
     pushHistoryEntry,
-    setRotationMode
+    setRotationMode,
+    setRoadDraftElevation
   } = editing;
   const [localName, setLocalName] = useState('');
   const [startPoseDraft, setStartPoseDraft] = useState({ x: '', y: '', heading: '' });
@@ -89,12 +93,18 @@ function ScenarioEditorPanel() {
     width: '',
     height: ''
   });
-  const [roadVertexDraft, setRoadVertexDraft] = useState<{ x: string; y: string }>({ x: '', y: '' });
+  const [roadVertexDraft, setRoadVertexDraft] = useState<{ x: string; y: string; z: string }>({ x: '', y: '', z: '' });
+  const [roadUniformZDraft, setRoadUniformZDraft] = useState('');
+  const [roadDraftElevationInput, setRoadDraftElevationInput] = useState('0.00');
   const [exportPreview, setExportPreview] = useState<ScenarioExportComparison | null>(null);
 
   useEffect(() => {
     setLocalName(normalizeScenarioName(activeScenario?.metadata.name) || '');
   }, [activeScenario?.metadata.name]);
+
+  useEffect(() => {
+    setRoadDraftElevationInput(editingState.roadDraftElevation.toFixed(2));
+  }, [editingState.roadDraftElevation]);
 
   const handleNameChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     setLocalName(event.target.value);
@@ -219,15 +229,32 @@ function ScenarioEditorPanel() {
 
   useEffect(() => {
     if (!selectedRoadVertex) {
-      setRoadVertexDraft({ x: '', y: '' });
+      setRoadVertexDraft({ x: '', y: '', z: '' });
       return;
     }
 
     setRoadVertexDraft({
       x: selectedRoadVertex.x.toFixed(2),
-      y: selectedRoadVertex.y.toFixed(2)
+      y: selectedRoadVertex.y.toFixed(2),
+      z: typeof selectedRoadVertex.z === 'number' && Number.isFinite(selectedRoadVertex.z)
+        ? selectedRoadVertex.z.toFixed(2)
+        : ''
     });
   }, [selectedRoadVertex]);
+
+  useEffect(() => {
+    if (!selectedRoadEdge) {
+      setRoadUniformZDraft('');
+      return;
+    }
+
+    const sample = selectedRoadEdge.points.find((point) => typeof point.z === 'number' && Number.isFinite(point.z));
+    if (sample && typeof sample.z === 'number') {
+      setRoadUniformZDraft(sample.z.toFixed(2));
+    } else {
+      setRoadUniformZDraft('');
+    }
+  }, [selectedRoadEdge]);
 
   useEffect(() => {
     if (!selectedAgent) {
@@ -511,8 +538,18 @@ function ScenarioEditorPanel() {
       return;
     }
 
-    setAgentTrackPrediction(activeScenarioId, selectedAgent.id, !selectedAgentIsPrediction);
-  }, [activeScenarioId, selectedAgent, selectedAgentIsPrediction, setAgentTrackPrediction]);
+    const toggled = setAgentTrackPrediction(activeScenarioId, selectedAgent.id, !selectedAgentIsPrediction);
+    if (toggled) {
+      const now = Date.now();
+      pushHistoryEntry({
+        id: `prediction-${selectedAgent.id}-${now.toString(36)}`,
+        label: !selectedAgentIsPrediction
+          ? `Added ${selectedAgent.displayName ?? selectedAgent.id} to tracks_to_predict`
+          : `Removed ${selectedAgent.displayName ?? selectedAgent.id} from tracks_to_predict`,
+        timestamp: now
+      });
+    }
+  }, [activeScenarioId, selectedAgent, selectedAgentIsPrediction, setAgentTrackPrediction, pushHistoryEntry]);
 
   const handleSelectPredictionTarget = useCallback((agentId: string) => {
     selectEntity({ kind: 'agent', id: agentId });
@@ -546,11 +583,34 @@ function ScenarioEditorPanel() {
     }
   }, [activeScenarioId, selectedRoadEdge, setRoadEdgeType, pushHistoryEntry]);
 
-  const handleRoadVertexDraftChange = useCallback((field: 'x' | 'y', value: string) => {
+  const handleRoadVertexDraftChange = useCallback((field: 'x' | 'y' | 'z', value: string) => {
     setRoadVertexDraft((prev) => ({
       ...prev,
       [field]: value
     }));
+  }, []);
+
+  const handleRoadDraftElevationInputChange = useCallback((value: string) => {
+    setRoadDraftElevationInput(value);
+  }, []);
+
+  const commitRoadDraftElevation = useCallback(() => {
+    const parsed = Number.parseFloat(roadDraftElevationInput);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+    setRoadDraftElevation(parsed);
+  }, [roadDraftElevationInput, setRoadDraftElevation]);
+
+  const handleRoadDraftElevationKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitRoadDraftElevation();
+    }
+  }, [commitRoadDraftElevation]);
+
+  const handleRoadUniformZDraftChange = useCallback((value: string) => {
+    setRoadUniformZDraft(value);
   }, []);
 
   const commitRoadVertexDraft = useCallback(() => {
@@ -564,10 +624,12 @@ function ScenarioEditorPanel() {
       return;
     }
 
-    const updated = updateRoadEdgePoint(activeScenarioId, selectedRoadEdge.id, selectedRoadVertexIndex, {
-      x: parsedX,
-      y: parsedY
-    });
+    const parsedZ = Number.parseFloat(roadVertexDraft.z);
+    const payload = Number.isFinite(parsedZ)
+      ? { x: parsedX, y: parsedY, z: parsedZ }
+      : { x: parsedX, y: parsedY };
+
+    const updated = updateRoadEdgePoint(activeScenarioId, selectedRoadEdge.id, selectedRoadVertexIndex, payload);
 
     if (updated) {
       const now = Date.now();
@@ -583,6 +645,7 @@ function ScenarioEditorPanel() {
     selectedRoadVertexIndex,
     roadVertexDraft.x,
     roadVertexDraft.y,
+    roadVertexDraft.z,
     updateRoadEdgePoint,
     pushHistoryEntry
   ]);
@@ -593,6 +656,39 @@ function ScenarioEditorPanel() {
       commitRoadVertexDraft();
     }
   }, [commitRoadVertexDraft]);
+
+  const handleApplyUniformRoadZ = useCallback(() => {
+    if (!activeScenarioId || !selectedRoadEdge || selectedRoadEdge.points.length === 0) {
+      return;
+    }
+
+    const parsed = Number.parseFloat(roadUniformZDraft);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+
+    const nextPoints = selectedRoadEdge.points.map((point) => ({
+      x: point.x,
+      y: point.y,
+      z: parsed
+    }));
+
+    const updated = updateRoadEdgePoints(activeScenarioId, selectedRoadEdge.id, nextPoints);
+    if (updated) {
+      const now = Date.now();
+      pushHistoryEntry({
+        id: `road-uniform-z-${selectedRoadEdge.id}-${now.toString(36)}`,
+        label: `Set all ${selectedRoadEdge.id} vertices to z=${parsed.toFixed(2)}`,
+        timestamp: now
+      });
+    }
+  }, [
+    activeScenarioId,
+    selectedRoadEdge,
+    roadUniformZDraft,
+    updateRoadEdgePoints,
+    pushHistoryEntry
+  ]);
 
   const handleInsertRoadVertex = useCallback((position: 'before' | 'after') => {
     if (!activeScenarioId || !selectedRoadEdge || typeof selectedRoadVertexIndex !== 'number') {
@@ -610,16 +706,39 @@ function ScenarioEditorPanel() {
 
     const afterIndex = position === 'after' ? selectedRoadVertexIndex : selectedRoadVertexIndex - 1;
 
-    let insertPoint = currentPoint;
+    const resolveInterpolatedZ = (a?: { z?: number }, b?: { z?: number }) => {
+      const aZ = typeof a?.z === 'number' && Number.isFinite(a.z) ? a.z : undefined;
+      const bZ = typeof b?.z === 'number' && Number.isFinite(b.z) ? b.z : undefined;
+      if (typeof aZ === 'number' && typeof bZ === 'number') {
+        return (aZ + bZ) / 2;
+      }
+      if (typeof aZ === 'number') {
+        return aZ;
+      }
+      if (typeof bZ === 'number') {
+        return bZ;
+      }
+      return undefined;
+    };
+
+    let insertPoint: { x: number; y: number; z?: number } = {
+      x: currentPoint.x,
+      y: currentPoint.y,
+      ...(typeof currentPoint.z === 'number' ? { z: currentPoint.z } : {})
+    };
     if (position === 'after' && nextPoint) {
+      const zValue = resolveInterpolatedZ(currentPoint, nextPoint);
       insertPoint = {
         x: (currentPoint.x + nextPoint.x) / 2,
-        y: (currentPoint.y + nextPoint.y) / 2
+        y: (currentPoint.y + nextPoint.y) / 2,
+        ...(typeof zValue === 'number' ? { z: zValue } : {})
       };
     } else if (position === 'before' && previousPoint) {
+      const zValue = resolveInterpolatedZ(previousPoint, currentPoint);
       insertPoint = {
         x: (currentPoint.x + previousPoint.x) / 2,
-        y: (currentPoint.y + previousPoint.y) / 2
+        y: (currentPoint.y + previousPoint.y) / 2,
+        ...(typeof zValue === 'number' ? { z: zValue } : {})
       };
     }
 
@@ -725,6 +844,7 @@ function ScenarioEditorPanel() {
     return firstSegmentLength >= 2 && secondSegmentLength >= 2;
   }, [selectedRoadEdge, selectedRoadVertexIndex]);
   const roadVertexCount = selectedRoadEdge?.points.length ?? 0;
+  const canApplyUniformZ = roadVertexCount > 0 && Boolean(selectedRoadEdge);
 
   const handleDeleteRoadEdge = useCallback(() => {
     if (!activeScenarioId || !selectedRoadEdge) {
@@ -779,6 +899,15 @@ function ScenarioEditorPanel() {
         <div className="editor-panel__header">
           <h3>Scenario Details</h3>
           <div className="editor-panel__header-actions">
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={() => basicUndo()}
+              disabled={basicUndoStepsRemaining === 0}
+              title="Naive 3-step undo. Reloads stored JSON; no redo or redo stack."
+            >
+              {`Undo (${basicUndoStepsRemaining} left)`}
+            </button>
             <button
               type="button"
               className="button"
@@ -1068,6 +1197,43 @@ function ScenarioEditorPanel() {
                       ))}
                     </select>
                   </label>
+                  <div className="selection-road-elevation">
+                    <label>
+                      <span>Default Draw Z (m)</span>
+                      <input
+                        type="number"
+                        step="0.05"
+                        value={roadDraftElevationInput}
+                        onChange={(event) => handleRoadDraftElevationInputChange(event.target.value)}
+                        onBlur={commitRoadDraftElevation}
+                        onKeyDown={handleRoadDraftElevationKeyDown}
+                      />
+                    </label>
+                    <p className="selection-note selection-note--muted">
+                      Applied to new vertices when using Draw Road.
+                    </p>
+                  </div>
+                  <div className="selection-road-elevation selection-road-elevation--uniform">
+                    <label>
+                      <span>All Vertices Z (m)</span>
+                      <input
+                        type="number"
+                        step="0.05"
+                        value={roadUniformZDraft}
+                        onChange={(event) => handleRoadUniformZDraftChange(event.target.value)}
+                        placeholder="0.00"
+                        disabled={!canApplyUniformZ}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="button button--secondary"
+                      onClick={handleApplyUniformRoadZ}
+                      disabled={!canApplyUniformZ}
+                    >
+                      Apply to Road
+                    </button>
+                  </div>
                   <div className="selection-road-vertices">
                     <div className="selection-road-vertices__header">
                       <span>Vertices</span>
@@ -1098,6 +1264,19 @@ function ScenarioEditorPanel() {
                             step="0.05"
                             value={roadVertexDraft.y}
                             onChange={(event) => handleRoadVertexDraftChange('y', event.target.value)}
+                            onBlur={commitRoadVertexDraft}
+                            onKeyDown={handleRoadVertexInputKeyDown}
+                            placeholder="0.00"
+                            disabled={!canEditRoadVertex}
+                          />
+                        </label>
+                        <label>
+                          <span>Z (m)</span>
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={roadVertexDraft.z}
+                            onChange={(event) => handleRoadVertexDraftChange('z', event.target.value)}
                             onBlur={commitRoadVertexDraft}
                             onKeyDown={handleRoadVertexInputKeyDown}
                             placeholder="0.00"

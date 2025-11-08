@@ -423,7 +423,11 @@ function parseWaymoScenario(raw: RawWaymoScenario): WaymoScenario {
   const roadEdges: RoadEdge[] = roads.map((road, index) => ({
     id: road.id != null ? String(road.id) : road.map_element_id != null ? String(road.map_element_id) : `road-${index}`,
     points: Array.isArray(road.geometry)
-      ? road.geometry.map((point) => ({ x: point.x, y: point.y }))
+      ? road.geometry.map((point) => ({
+          x: point.x,
+          y: point.y,
+          ...(typeof point.z === 'number' && Number.isFinite(point.z) ? { z: point.z } : {})
+        }))
       : [],
     type: mapRoadType(road.type)
   }));

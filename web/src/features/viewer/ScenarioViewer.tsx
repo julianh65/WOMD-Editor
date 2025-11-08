@@ -43,6 +43,8 @@ interface RoadDrawOptions {
   selectedVertex?: RoadHandleRef;
   hoveredVertex?: RoadHandleRef;
   hoveredSegment?: RoadSegmentRef;
+  colorByElevation?: boolean;
+  elevationRange?: { min: number; max: number };
 }
 
 type DragMode = 'pan' | 'record' | 'gizmo-translate-x' | 'gizmo-translate-y' | 'gizmo-rotate' | 'road-handle';
@@ -60,7 +62,7 @@ interface DragGizmoState {
 interface DragRoadHandleState {
   roadId: string;
   pointIndex: number;
-  originalPoints: Array<{ x: number; y: number }>;
+  originalPoints: RoadEdge['points'];
   changed: boolean;
 }
 
@@ -293,7 +295,9 @@ function drawRoadEdges(
     showVertices,
     selectedVertex,
     hoveredVertex,
-    hoveredSegment
+    hoveredSegment,
+    colorByElevation,
+    elevationRange
   } = options;
 
   edges.forEach((edge) => {
@@ -359,7 +363,9 @@ function drawRoadEdges(
     if (shouldShowVertices) {
       drawRoadVertexHandles(ctx, edge, base, camera, dims, {
         selectedIndex: selectedVertexIndex,
-        hoveredIndex: hoveredVertexIndex
+        hoveredIndex: hoveredVertexIndex,
+        colorByElevation,
+        elevationRange
       });
     }
   });
@@ -373,9 +379,14 @@ function drawRoadVertexHandles(
   base: CanvasTransform,
   camera: CameraState,
   dims: CanvasDims,
-  options: { selectedIndex?: number; hoveredIndex?: number } = {}
+  options: {
+    selectedIndex?: number;
+    hoveredIndex?: number;
+    colorByElevation?: boolean;
+    elevationRange?: { min: number; max: number };
+  } = {}
 ) {
-  const { selectedIndex, hoveredIndex } = options;
+  const { selectedIndex, hoveredIndex, colorByElevation, elevationRange } = options;
 
   const baseRadius = Math.max(ROAD_HANDLE_BASE_RADIUS_PX, ROAD_HANDLE_BASE_RADIUS_PX / camera.zoom);
   const lineWidth = Math.max(1.4, 1.4 / camera.zoom);
@@ -393,12 +404,19 @@ function drawRoadVertexHandles(
     let fillStyle = 'rgba(248, 250, 252, 0.95)';
     let strokeStyle = 'rgba(15, 23, 42, 0.85)';
 
+    const elevationColour = colorByElevation && !isSelected && !isHovered
+      ? getElevationColour(point.z, elevationRange)
+      : undefined;
+
     if (isSelected) {
       fillStyle = 'rgba(250, 204, 21, 0.95)';
       strokeStyle = 'rgba(113, 63, 18, 0.95)';
     } else if (isHovered) {
       fillStyle = 'rgba(34, 211, 238, 0.92)';
       strokeStyle = 'rgba(8, 145, 178, 0.95)';
+    } else if (elevationColour) {
+      fillStyle = elevationColour;
+      strokeStyle = 'rgba(15, 23, 42, 0.9)';
     } else if (index === 0) {
       fillStyle = 'rgba(14, 165, 233, 0.95)';
       strokeStyle = 'rgba(14, 116, 144, 0.9)';
@@ -417,6 +435,33 @@ function drawRoadVertexHandles(
     ctx.textBaseline = 'middle';
     ctx.fillStyle = isSelected ? '#1f2937' : '#0f172a';
     ctx.fillText(index.toString(), x, y);
+    const showElevation = typeof hoveredIndex === 'number' && index === hoveredIndex;
+    if (showElevation) {
+      const hasZ = typeof point.z === 'number' && Number.isFinite(point.z);
+      const zLabel = hasZ ? `z ${(point.z as number).toFixed(2)}` : 'z —';
+      const labelFontSize = Math.max(16, 20 / camera.zoom);
+      const labelOffset = radius + Math.max(10, 14 / camera.zoom);
+      const paddingX = Math.max(6, 8 / camera.zoom);
+      const paddingY = Math.max(4, 6 / camera.zoom);
+
+      ctx.save();
+      ctx.font = `${labelFontSize}px "Segoe UI", sans-serif`;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'center';
+
+      const metrics = ctx.measureText(zLabel);
+      const rectWidth = metrics.width + paddingX * 2;
+      const rectHeight = labelFontSize + paddingY * 2;
+      const rectX = x - rectWidth / 2;
+      const rectY = y + labelOffset;
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.fillRect(rectX, rectY, rectWidth, rectHeight);
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(zLabel, x, rectY + paddingY);
+      ctx.restore();
+    }
   });
   ctx.restore();
 }
@@ -641,6 +686,50 @@ function distanceToSegment(
   const projX = start.x + t * dx;
   const projY = start.y + t * dy;
   return Math.hypot(point.x - projX, point.y - projY);
+}
+
+function projectPointRatioOntoSegment(
+  point: { x: number; y: number },
+  start: { x: number; y: number },
+  end: { x: number; y: number }
+): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) {
+    return 0;
+  }
+  const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSq;
+  return Math.max(0, Math.min(1, t));
+}
+
+function interpolateRoadZ(
+  start: { z?: number },
+  end: { z?: number },
+  ratio: number
+): number | undefined {
+  const startHasZ = typeof start.z === 'number' && Number.isFinite(start.z);
+  const endHasZ = typeof end.z === 'number' && Number.isFinite(end.z);
+  if (startHasZ && endHasZ) {
+    return (start.z as number) + ((end.z as number) - (start.z as number)) * ratio;
+  }
+  if (startHasZ) {
+    return start.z as number;
+  }
+  if (endHasZ) {
+    return end.z as number;
+  }
+  return undefined;
+}
+
+function getElevationColour(value: number | undefined, range?: { min: number; max: number }): string | undefined {
+  if (!range || typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const span = Math.max(range.max - range.min, 1e-6);
+  const t = Math.min(Math.max((value - range.min) / span, 0), 1);
+  const hue = 220 - t * 220;
+  return `hsl(${hue}, 85%, 55%)`;
 }
 
 function distanceToTrajectory(point: { x: number; y: number }, agent: ScenarioAgent) {
@@ -987,6 +1076,7 @@ function ScenarioViewer() {
     state: editingState,
     setMode: setEditingMode,
     setTool: setEditingTool,
+    setColorRoadVerticesByElevation,
     hoverEntity,
     selectEntity,
     clearSelection,
@@ -1058,6 +1148,30 @@ function ScenarioViewer() {
   const selectedRoadHandle = editingState.selectedRoadHandle;
   const hoveredRoadHandle = editingState.hoveredRoadHandle;
   const hoveredRoadSegment = editingState.hoveredRoadSegment;
+  const roadElevationRange = useMemo(() => {
+    if (!activeScenario) {
+      return undefined;
+    }
+
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+
+    activeScenario.roadEdges.forEach((edge) => {
+      edge.points.forEach((point) => {
+        if (typeof point.z === 'number' && Number.isFinite(point.z)) {
+          min = Math.min(min, point.z);
+          max = Math.max(max, point.z);
+        }
+      });
+    });
+
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      return undefined;
+    }
+
+    return { min, max };
+  }, [activeScenario]);
+  const colorRoadVerticesByElevation = editingState.colorRoadVerticesByElevation;
   const selectedRoadEdge = useMemo(() => {
     if (!selectedRoadId || !activeScenario) {
       return undefined;
@@ -1829,6 +1943,10 @@ function ScenarioViewer() {
     }
   }, [activeTool, setEditingTool, isRecording, cancelTrajectoryRecording, isDriveActive, stopDriveMode]);
 
+  const handleToggleRoadElevationColor = useCallback(() => {
+    setColorRoadVerticesByElevation(!colorRoadVerticesByElevation);
+  }, [colorRoadVerticesByElevation, setColorRoadVerticesByElevation]);
+
   const finalizeRoadDraft = useCallback(() => {
     if (!activeScenarioId) {
       return false;
@@ -2129,7 +2247,9 @@ function ScenarioViewer() {
       showVertices: isRoadMode && activeTool === 'road-edit',
       selectedVertex: selectedRoadHandle,
       hoveredVertex: hoveredRoadHandle,
-      hoveredSegment: hoveredRoadSegment
+      hoveredSegment: hoveredRoadSegment,
+      colorByElevation: colorRoadVerticesByElevation,
+      elevationRange: roadElevationRange
     });
 
     if (roadDraft) {
@@ -2249,7 +2369,9 @@ function ScenarioViewer() {
     hoveredRoadSegment,
     isRoadMode,
     activeTool,
-    roadDraft
+    roadDraft,
+    colorRoadVerticesByElevation,
+    roadElevationRange
   ]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -2323,7 +2445,14 @@ function ScenarioViewer() {
         if ((event.shiftKey || event.ctrlKey) && activeScenarioId) {
           const segmentHit = findRoadSegmentHit(worldPoint, activeScenario.roadEdges, ROAD_SEGMENT_HIT_RADIUS_METERS);
           if (segmentHit) {
-            const insertedIndex = insertRoadEdgePoint(activeScenarioId, segmentHit.edge.id, worldPoint, {
+            const start = segmentHit.edge.points[segmentHit.segmentIndex];
+            const end = segmentHit.edge.points[segmentHit.segmentIndex + 1];
+            const ratio = projectPointRatioOntoSegment(worldPoint, start, end);
+            const interpolatedZ = interpolateRoadZ(start, end, ratio);
+            const insertPoint = typeof interpolatedZ === 'number'
+              ? { x: worldPoint.x, y: worldPoint.y, z: interpolatedZ }
+              : { x: worldPoint.x, y: worldPoint.y };
+            const insertedIndex = insertRoadEdgePoint(activeScenarioId, segmentHit.edge.id, insertPoint, {
               afterIndex: segmentHit.segmentIndex
             });
             if (typeof insertedIndex === 'number') {
@@ -2559,7 +2688,11 @@ function ScenarioViewer() {
 
       const nextPoints = handle.originalPoints.map((point, index) => (
         index === handle.pointIndex
-          ? { x: pointerWorld.x, y: pointerWorld.y }
+          ? {
+              x: pointerWorld.x,
+              y: pointerWorld.y,
+              ...(typeof point.z === 'number' ? { z: point.z } : {})
+            }
           : point
       ));
 
@@ -3082,6 +3215,14 @@ function ScenarioViewer() {
                   onClick={() => handleToolChange('road-add')}
                 >
                   Draw Road
+                </button>
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  aria-pressed={colorRoadVerticesByElevation}
+                  onClick={handleToggleRoadElevationColor}
+                >
+                  Color by Z
                 </button>
               </div>
             </div>
