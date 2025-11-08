@@ -901,12 +901,16 @@ function ScenarioEditorPanel() {
           <div className="editor-panel__header-actions">
             <button
               type="button"
-              className="button button--secondary"
+              className="button button--secondary button--compact"
               onClick={() => basicUndo()}
               disabled={basicUndoStepsRemaining === 0}
               title="Naive 3-step undo. Reloads stored JSON; no redo or redo stack."
+              aria-label={`Undo (${basicUndoStepsRemaining} steps left)`}
             >
-              {`Undo (${basicUndoStepsRemaining} left)`}
+              Undo
+              <span className="button__pill" aria-hidden="true">
+                {basicUndoStepsRemaining}
+              </span>
             </button>
             <button
               type="button"
