@@ -162,6 +162,8 @@ function mapRoadType(rawType?: string): RoadEdge['type'] | undefined {
   }
 
   switch (rawType.toLowerCase()) {
+    case 'lane':
+      return 'ROAD_LANE';
     case 'road_line':
       return 'ROAD_LINE';
     case 'road_edge':

@@ -199,6 +199,43 @@ const ROAD_STYLES: Record<string, { stroke: string; width: number; dash?: number
 const ROAD_VERTEX_HIT_RADIUS_METERS = 1.25;
 const ROAD_SEGMENT_HIT_RADIUS_METERS = 1.5;
 const ROAD_HANDLE_BASE_RADIUS_PX = 6;
+const LANE_CONNECTION_DISTANCE_THRESHOLD_METERS = 0.75;
+const LANE_CONNECTION_HEADING_THRESHOLD_RADIANS = 0.35;
+const LANE_DIRECTION_ARROW_LENGTH_METERS = 4;
+const TOPOLOGY_LINE_BASE_WIDTH_PX = 3.2;
+const TOPOLOGY_ARROW_SIZE_PX = 12;
+const TOPOLOGY_NODE_RADIUS_PX = 7;
+
+function laneColourFromId(id: string, alpha = 1) {
+  let hash = 0;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = (hash * 31 + id.charCodeAt(index)) | 0;
+  }
+  const hue = ((hash % 360) + 360) % 360;
+  const clampedAlpha = Math.min(Math.max(alpha, 0), 1);
+  return `hsla(${hue}, 70%, 60%, ${clampedAlpha})`;
+}
+
+interface LaneEndpoint {
+  edgeId: string;
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+  startHeading: number;
+  endHeading: number;
+  points: Array<Pick<TrajectoryPoint, 'x' | 'y'>>;
+}
+
+interface LaneConnection {
+  fromId: string;
+  toId: string;
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+}
+
+interface LaneTopologyGraph {
+  lanes: LaneEndpoint[];
+  connections: LaneConnection[];
+}
 
 const GIZMO_TRANSLATE_LENGTH = 3;
 const GIZMO_ROTATION_RADIUS = 4;
@@ -509,6 +546,118 @@ function drawRoadDraft(
   ctx.restore();
 }
 
+function drawTopologyGraph(
+  ctx: CanvasRenderingContext2D,
+  base: CanvasTransform,
+  camera: CameraState,
+  dims: CanvasDims,
+  graph: LaneTopologyGraph
+) {
+  if (graph.connections.length === 0 && graph.lanes.length === 0) {
+    return;
+  }
+
+  ctx.save();
+  const lineWidth = Math.max(TOPOLOGY_LINE_BASE_WIDTH_PX, TOPOLOGY_LINE_BASE_WIDTH_PX / camera.zoom);
+  const arrowSize = Math.max(TOPOLOGY_ARROW_SIZE_PX, TOPOLOGY_ARROW_SIZE_PX / camera.zoom);
+  ctx.lineWidth = lineWidth;
+  ctx.strokeStyle = 'rgba(251, 191, 36, 0.95)';
+  ctx.fillStyle = 'rgba(251, 191, 36, 0.95)';
+
+  ctx.save();
+  ctx.lineWidth = Math.max(3, 3 / camera.zoom);
+  ctx.lineCap = 'round';
+  graph.lanes.forEach((lane) => {
+    if (!lane.points || lane.points.length < 2) {
+      return;
+    }
+    const laneColour = laneColourFromId(lane.edgeId, 0.95);
+    ctx.strokeStyle = laneColour;
+    const first = worldToCanvas(lane.points[0], base, camera, dims);
+    ctx.beginPath();
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < lane.points.length; i += 1) {
+      const pt = worldToCanvas(lane.points[i], base, camera, dims);
+      ctx.lineTo(pt.x, pt.y);
+    }
+    ctx.stroke();
+
+    ctx.save();
+    ctx.strokeStyle = laneColourFromId(lane.edgeId, 0.55);
+    ctx.lineWidth = Math.max(1.8, 1.8 / camera.zoom);
+    const start = worldToCanvas(lane.start, base, camera, dims);
+    const end = worldToCanvas(lane.end, base, camera, dims);
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+    ctx.restore();
+  });
+  ctx.restore();
+
+  graph.connections.forEach((connection) => {
+    const start = worldToCanvas(connection.from, base, camera, dims);
+    const end = worldToCanvas(connection.to, base, camera, dims);
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+
+    const angle = Math.atan2(end.y - start.y, end.x - start.x);
+    ctx.beginPath();
+    ctx.moveTo(end.x, end.y);
+    ctx.lineTo(end.x - arrowSize * Math.cos(angle - Math.PI / 8), end.y - arrowSize * Math.sin(angle - Math.PI / 8));
+    ctx.lineTo(end.x - arrowSize * Math.cos(angle + Math.PI / 8), end.y - arrowSize * Math.sin(angle + Math.PI / 8));
+    ctx.closePath();
+    ctx.fill();
+  });
+
+  const startNodeColour = 'rgba(59, 130, 246, 0.95)';
+  const endNodeColour = 'rgba(248, 113, 113, 0.95)';
+  const nodeRadius = Math.max(TOPOLOGY_NODE_RADIUS_PX, TOPOLOGY_NODE_RADIUS_PX / camera.zoom);
+  graph.lanes.forEach((lane) => {
+    const start = worldToCanvas(lane.start, base, camera, dims);
+    const end = worldToCanvas(lane.end, base, camera, dims);
+    ctx.beginPath();
+    ctx.fillStyle = startNodeColour;
+    ctx.strokeStyle = 'rgba(30, 64, 175, 0.85)';
+    ctx.arc(start.x, start.y, nodeRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.fillStyle = endNodeColour;
+    ctx.strokeStyle = 'rgba(153, 27, 27, 0.9)';
+    ctx.arc(end.x, end.y, nodeRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    const directionWorld = {
+      x: lane.start.x + Math.cos(lane.startHeading) * LANE_DIRECTION_ARROW_LENGTH_METERS,
+      y: lane.start.y + Math.sin(lane.startHeading) * LANE_DIRECTION_ARROW_LENGTH_METERS
+    };
+    const directionEnd = worldToCanvas(directionWorld, base, camera, dims);
+    ctx.beginPath();
+    ctx.strokeStyle = startNodeColour;
+    ctx.lineWidth = Math.max(2, 2 / camera.zoom);
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(directionEnd.x, directionEnd.y);
+    ctx.stroke();
+
+    const headingAngle = Math.atan2(directionEnd.y - start.y, directionEnd.x - start.x);
+    const directionArrowSize = Math.max(6, 8 / camera.zoom);
+    ctx.beginPath();
+    ctx.moveTo(directionEnd.x, directionEnd.y);
+    ctx.lineTo(directionEnd.x - Math.cos(headingAngle - Math.PI / 6) * directionArrowSize, directionEnd.y - Math.sin(headingAngle - Math.PI / 6) * directionArrowSize);
+    ctx.lineTo(directionEnd.x - Math.cos(headingAngle + Math.PI / 6) * directionArrowSize, directionEnd.y - Math.sin(headingAngle + Math.PI / 6) * directionArrowSize);
+    ctx.closePath();
+    ctx.fillStyle = startNodeColour;
+    ctx.fill();
+  });
+
+  ctx.restore();
+}
+
 function getTrajectoryColour(agent: ScenarioAgent) {
   if (agent.type === 'VEHICLE') {
     return agent.isExpert ? 'rgba(34, 197, 94, 0.6)' : 'rgba(56, 189, 248, 0.65)';
@@ -796,6 +945,109 @@ function findRoadSegmentHit(point: { x: number; y: number }, edges: RoadEdge[], 
   return closest;
 }
 
+function computeLaneHeading(a: { x: number; y: number }, b: { x: number; y: number }): number | undefined {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const magnitude = Math.hypot(dx, dy);
+  if (magnitude < 1e-4) {
+    return undefined;
+  }
+  return Math.atan2(dy, dx);
+}
+
+function resolveEndpointHeading(points: Array<Pick<TrajectoryPoint, 'x' | 'y'>>, reverse = false): number | undefined {
+  if (points.length < 2) {
+    return undefined;
+  }
+
+  if (reverse) {
+    for (let index = points.length - 1; index >= 1; index -= 1) {
+      const heading = computeLaneHeading(points[index - 1], points[index]);
+      if (typeof heading === 'number') {
+        return heading;
+      }
+    }
+    return undefined;
+  }
+
+  for (let index = 1; index < points.length; index += 1) {
+    const heading = computeLaneHeading(points[index - 1], points[index]);
+    if (typeof heading === 'number') {
+      return heading;
+    }
+  }
+  return undefined;
+}
+
+function computeLaneTopologyGraph(edges?: RoadEdge[]): LaneTopologyGraph {
+  if (!edges || edges.length === 0) {
+    return { lanes: [], connections: [] };
+  }
+
+  const lanes: LaneEndpoint[] = [];
+  edges.forEach((edge) => {
+    if (edge.type !== 'ROAD_LANE') {
+      return;
+    }
+    if (!edge.points || edge.points.length < 2) {
+      return;
+    }
+
+    const first = edge.points[0];
+    const last = edge.points[edge.points.length - 1];
+    if (!(Number.isFinite(first.x) && Number.isFinite(first.y) && Number.isFinite(last.x) && Number.isFinite(last.y))) {
+      return;
+    }
+
+    const startHeading = resolveEndpointHeading(edge.points, false);
+    const endHeading = resolveEndpointHeading(edge.points, true);
+    if (typeof startHeading !== 'number' || typeof endHeading !== 'number') {
+      return;
+    }
+
+    lanes.push({
+      edgeId: edge.id,
+      start: { x: first.x, y: first.y },
+      end: { x: last.x, y: last.y },
+      startHeading,
+      endHeading,
+      points: edge.points
+    });
+  });
+
+  if (lanes.length === 0) {
+    return { lanes: [], connections: [] };
+  }
+
+  const connections: LaneConnection[] = [];
+  for (let i = 0; i < lanes.length; i += 1) {
+    const origin = lanes[i];
+    for (let j = 0; j < lanes.length; j += 1) {
+      if (i === j) {
+        continue;
+      }
+      const target = lanes[j];
+      const distance = Math.hypot(origin.end.x - target.start.x, origin.end.y - target.start.y);
+      if (distance >= LANE_CONNECTION_DISTANCE_THRESHOLD_METERS) {
+        continue;
+      }
+      const headingDelta = Math.abs(normalizeAngle(origin.endHeading - target.startHeading));
+      if (headingDelta >= LANE_CONNECTION_HEADING_THRESHOLD_RADIANS) {
+        continue;
+      }
+
+      connections.push({
+        fromId: origin.edgeId,
+        toId: target.edgeId,
+        from: origin.end,
+        to: target.start
+      });
+    }
+  }
+
+  return { lanes, connections };
+}
+
 function isGizmoMode(mode: DragMode): boolean {
   return mode === 'gizmo-translate-x' || mode === 'gizmo-translate-y' || mode === 'gizmo-rotate';
 }
@@ -1077,6 +1329,7 @@ function ScenarioViewer() {
     setMode: setEditingMode,
     setTool: setEditingTool,
     setColorRoadVerticesByElevation,
+    setShowTopologyGraph,
     hoverEntity,
     selectEntity,
     clearSelection,
@@ -1148,6 +1401,7 @@ function ScenarioViewer() {
   const selectedRoadHandle = editingState.selectedRoadHandle;
   const hoveredRoadHandle = editingState.hoveredRoadHandle;
   const hoveredRoadSegment = editingState.hoveredRoadSegment;
+  const showTopologyGraph = editingState.showTopologyGraph;
   const roadElevationRange = useMemo(() => {
     if (!activeScenario) {
       return undefined;
@@ -1172,6 +1426,7 @@ function ScenarioViewer() {
     return { min, max };
   }, [activeScenario]);
   const colorRoadVerticesByElevation = editingState.colorRoadVerticesByElevation;
+  const topologyGraph = useMemo(() => computeLaneTopologyGraph(activeScenario?.roadEdges), [activeScenario?.roadEdges]);
   const selectedRoadEdge = useMemo(() => {
     if (!selectedRoadId || !activeScenario) {
       return undefined;
@@ -1947,6 +2202,10 @@ function ScenarioViewer() {
     setColorRoadVerticesByElevation(!colorRoadVerticesByElevation);
   }, [colorRoadVerticesByElevation, setColorRoadVerticesByElevation]);
 
+  const handleToggleTopologyGraph = useCallback(() => {
+    setShowTopologyGraph(!showTopologyGraph);
+  }, [setShowTopologyGraph, showTopologyGraph]);
+
   const finalizeRoadDraft = useCallback(() => {
     if (!activeScenarioId) {
       return false;
@@ -2252,6 +2511,10 @@ function ScenarioViewer() {
       elevationRange: roadElevationRange
     });
 
+    if (showTopologyGraph && (topologyGraph.connections.length > 0 || topologyGraph.lanes.length > 0)) {
+      drawTopologyGraph(ctx, baseTransform, camera, dims, topologyGraph);
+    }
+
     if (roadDraft) {
       drawRoadDraft(ctx, roadDraft, baseTransform, camera, dims);
     }
@@ -2371,7 +2634,9 @@ function ScenarioViewer() {
     activeTool,
     roadDraft,
     colorRoadVerticesByElevation,
-    roadElevationRange
+    roadElevationRange,
+    showTopologyGraph,
+    topologyGraph
   ]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -3224,7 +3489,22 @@ function ScenarioViewer() {
                 >
                   Color by Z
                 </button>
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  aria-pressed={showTopologyGraph}
+                  onClick={handleToggleTopologyGraph}
+                  disabled={topologyGraph.lanes.length === 0}
+                >
+                  Lane Graph
+                </button>
               </div>
+            </div>
+          )}
+
+          {isRoadMode && showTopologyGraph && topologyGraph.lanes.length > 0 && (
+            <div className="viewer__toolbar-banner">
+              <span>Lane graph overlay – blue circles show lane entries, red circles show exits, and amber arrows mark downstream flow.</span>
             </div>
           )}
 

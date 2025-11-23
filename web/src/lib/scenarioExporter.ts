@@ -102,6 +102,7 @@ const AGENT_TYPE_TO_RAW: Record<string, string> = {
 };
 
 const ROAD_TYPE_TO_RAW: Record<string, string> = {
+  ROAD_LANE: 'lane',
   ROAD_LINE: 'road_line',
   ROAD_EDGE: 'road_edge',
   CROSSWALK: 'crosswalk',

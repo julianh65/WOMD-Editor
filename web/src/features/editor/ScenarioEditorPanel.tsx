@@ -6,6 +6,7 @@ import { useScenarioStore, type AgentLabelMode } from '@/state/scenarioStore';
 import type { AgentType, ScenarioAgent } from '@/types/scenario';
 
 const ROAD_TYPE_OPTIONS = [
+  { value: 'ROAD_LANE', label: 'Road Lane' },
   { value: 'ROAD_EDGE', label: 'Road Edge' },
   { value: 'ROAD_LINE', label: 'Road Line' },
   { value: 'CROSSWALK', label: 'Crosswalk' },
@@ -83,7 +84,8 @@ function ScenarioEditorPanel() {
     setSelectedRoadHandle,
     pushHistoryEntry,
     setRotationMode,
-    setRoadDraftElevation
+    setRoadDraftElevation,
+    setShowTopologyGraph
   } = editing;
   const [localName, setLocalName] = useState('');
   const [startPoseDraft, setStartPoseDraft] = useState({ x: '', y: '', heading: '' });
@@ -113,6 +115,10 @@ function ScenarioEditorPanel() {
   const handleAgentLabelModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     setAgentLabelMode(event.target.value as AgentLabelMode);
   }, [setAgentLabelMode]);
+
+  const handleTopologyOverlayToggle = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    setShowTopologyGraph(event.target.checked);
+  }, [setShowTopologyGraph]);
 
   const normalizedName = useMemo(() => normalizeScenarioName(localName), [localName]);
 
@@ -181,6 +187,7 @@ function ScenarioEditorPanel() {
   }, []);
 
   const selectedEntity = editingState.selectedEntity;
+  const showTopologyGraph = editingState.showTopologyGraph;
   const rotationMode = editingState.rotationMode;
   const selectedAgentId = selectedEntity?.kind === 'agent' ? selectedEntity.id : undefined;
   const agents = useMemo(() => activeScenario?.agents ?? [], [activeScenario?.agents]);
@@ -208,6 +215,10 @@ function ScenarioEditorPanel() {
   }, [activeScenario]);
   const selectedRoadEdgeId = editingState.selectedEntity?.kind === 'roadEdge' ? editingState.selectedEntity.id : undefined;
   const roadEdges = useMemo(() => activeScenario?.roadEdges ?? [], [activeScenario?.roadEdges]);
+  const hasLaneEdges = useMemo(
+    () => roadEdges.some((edge) => edge.type === 'ROAD_LANE'),
+    [roadEdges]
+  );
   const selectedRoadEdge = useMemo(
     () => roadEdges.find((edge) => edge.id === selectedRoadEdgeId),
     [roadEdges, selectedRoadEdgeId]
@@ -951,6 +962,30 @@ function ScenarioEditorPanel() {
               <option value="index">Array Index</option>
             </select>
           </label>
+        </div>
+
+        <div className="editor-panel__section">
+          <div className="editor-panel__section-header">
+            <h4>Viewer Overlays</h4>
+          </div>
+          <label className="toggle-row">
+            <span>Lane topology graph</span>
+            <input
+              type="checkbox"
+              checked={showTopologyGraph && hasLaneEdges}
+              onChange={handleTopologyOverlayToggle}
+              disabled={!hasLaneEdges}
+            />
+          </label>
+          {hasLaneEdges ? (
+            <p className="selection-note selection-note--muted">
+              Blue circles mark lane entries, red circles mark exits, and amber arrows show allowed transitions between lanes.
+            </p>
+          ) : (
+            <p className="selection-note selection-note--muted">
+              Draw or import lanes to enable the drivability graph overlay in the viewer.
+            </p>
+          )}
         </div>
 
         <div className="editor-panel__section">

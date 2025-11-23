@@ -83,6 +83,7 @@ export interface EditingState {
   rotationMode: 'path' | 'pose';
   roadDraftElevation: number;
   colorRoadVerticesByElevation: boolean;
+  showTopologyGraph: boolean;
   hoveredEntity?: EditingEntityRef;
   selectedEntity?: EditingEntityRef;
   hoveredRoadHandle?: RoadHandleRef;
@@ -101,6 +102,7 @@ function createInitialEditingState(): EditingState {
     rotationMode: 'path',
     roadDraftElevation: 0,
     colorRoadVerticesByElevation: false,
+    showTopologyGraph: false,
     hoveredEntity: undefined,
     selectedEntity: undefined,
     hoveredRoadHandle: undefined,
@@ -728,6 +730,7 @@ export interface EditingStoreValue {
   setRotationMode: (mode: 'path' | 'pose') => void;
   setRoadDraftElevation: (value: number) => void;
   setColorRoadVerticesByElevation: (enabled: boolean) => void;
+  setShowTopologyGraph: (enabled: boolean) => void;
   hoverEntity: (ref?: EditingEntityRef) => void;
   selectEntity: (ref?: EditingEntityRef) => void;
   clearSelection: () => void;
@@ -1681,6 +1684,18 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     });
   }, []);
 
+  const setShowTopologyGraph = useCallback((enabled: boolean) => {
+    setEditingState((prev) => {
+      if (prev.showTopologyGraph === enabled) {
+        return prev;
+      }
+      return {
+        ...prev,
+        showTopologyGraph: enabled
+      };
+    });
+  }, []);
+
   const hoverEntity = useCallback((ref?: EditingEntityRef) => {
     setEditingState((prev) => ({
       ...prev,
@@ -2512,6 +2527,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     setRotationMode,
     setRoadDraftElevation,
     setColorRoadVerticesByElevation,
+    setShowTopologyGraph,
     hoverEntity,
     selectEntity,
     clearSelection,
@@ -2541,6 +2557,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     setRotationMode,
     setRoadDraftElevation,
     setColorRoadVerticesByElevation,
+    setShowTopologyGraph,
     hoverEntity,
     selectEntity,
     clearSelection,
