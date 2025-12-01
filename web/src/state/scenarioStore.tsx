@@ -169,6 +169,79 @@ function computeBoundsFromAgents(agents: ScenarioAgent[]): ScenarioBounds | unde
   return ensureBoundsSpan({ minX, maxX, minY, maxY });
 }
 
+type LanePoint = { x: number; y: number; z?: number };
+
+interface LaneSegment {
+  edgeId: string;
+  start: LanePoint;
+  end: LanePoint;
+  heading: number;
+  length: number;
+}
+
+function resolveLaneCandidateEdges(edges: RoadEdge[]): RoadEdge[] {
+  const laneEdges = edges.filter((edge) => edge.type === 'ROAD_LANE');
+  if (laneEdges.length > 0) {
+    return laneEdges;
+  }
+  return edges.filter((edge) => edge.type === 'ROAD_LINE');
+}
+
+function normalizeLanePoint(point: Pick<TrajectoryPoint, 'x' | 'y' | 'z'>): LanePoint | undefined {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    return undefined;
+  }
+
+  const normalized: LanePoint = {
+    x: point.x,
+    y: point.y
+  };
+
+  if (typeof point.z === 'number' && Number.isFinite(point.z)) {
+    normalized.z = point.z;
+  }
+
+  return normalized;
+}
+
+function buildLaneSegments(edges: RoadEdge[]): LaneSegment[] {
+  const segments: LaneSegment[] = [];
+  const candidateEdges = resolveLaneCandidateEdges(edges);
+
+  candidateEdges.forEach((edge) => {
+    if (!edge.points || edge.points.length < 2) {
+      return;
+    }
+
+    for (let index = 1; index < edge.points.length; index += 1) {
+      const rawStart = edge.points[index - 1];
+      const rawEnd = edge.points[index];
+      const start = normalizeLanePoint(rawStart);
+      const end = normalizeLanePoint(rawEnd);
+      if (!start || !end) {
+        continue;
+      }
+
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const length = Math.hypot(dx, dy);
+      if (length < 1e-3) {
+        continue;
+      }
+
+      segments.push({
+        edgeId: edge.id,
+        start,
+        end,
+        heading: Math.atan2(dy, dx),
+        length
+      });
+    }
+  });
+
+  return segments;
+}
+
 function normalizeAngle(angle: number): number {
   let next = angle;
   while (next <= -Math.PI) {
@@ -361,6 +434,46 @@ function withScenarioRebuild(base: WaymoScenario, nextAgents: ScenarioAgent[]): 
   };
 }
 
+function createStationaryTrajectory(
+  scenario: WaymoScenario,
+  pose: { x: number; y: number; z?: number; headingRadians?: number }
+): TrajectoryPoint[] {
+  const z = typeof pose.z === 'number' && Number.isFinite(pose.z) ? pose.z : 0;
+  const heading = typeof pose.headingRadians === 'number' && Number.isFinite(pose.headingRadians)
+    ? pose.headingRadians
+    : 0;
+  const frameInterval = scenario.metadata.frameIntervalMicros ?? DEFAULT_FRAME_INTERVAL_MICROS;
+
+  if (scenario.frames.length > 0) {
+    return scenario.frames.map((frame) => ({
+      frameIndex: frame.index,
+      timestampMicros: frame.timestampMicros,
+      x: pose.x,
+      y: pose.y,
+      z,
+      heading,
+      velocityX: 0,
+      velocityY: 0,
+      speed: 0,
+      valid: true
+    }));
+  }
+
+  const frameCount = scenario.metadata.frameCount > 0 ? scenario.metadata.frameCount : 60;
+  return Array.from({ length: frameCount }, (_, index) => ({
+    frameIndex: index,
+    timestampMicros: index * frameInterval,
+    x: pose.x,
+    y: pose.y,
+    z,
+    heading,
+    velocityX: 0,
+    velocityY: 0,
+    speed: 0,
+    valid: true
+  }));
+}
+
 function findFirstValidPoint(points: TrajectoryPoint[]): TrajectoryPoint | undefined {
   return points.find((point) => point.valid !== false);
 }
@@ -481,10 +594,16 @@ function transformAgentTrajectory(
   anchorPoint: TrajectoryPoint,
   targetAnchorX: number,
   targetAnchorY: number,
-  deltaHeadingRad: number
+  deltaHeadingRad: number,
+  options?: { targetAnchorZ?: number }
 ): ScenarioAgent {
   const cos = Math.cos(deltaHeadingRad);
   const sin = Math.sin(deltaHeadingRad);
+  const targetAnchorZ = options?.targetAnchorZ;
+  const anchorZ = typeof anchorPoint.z === 'number' ? anchorPoint.z : undefined;
+  const anchorBaseZ = typeof anchorZ === 'number' ? anchorZ : 0;
+  const applyZTransform = typeof targetAnchorZ === 'number';
+  const deltaZ = applyZTransform ? targetAnchorZ - anchorBaseZ : 0;
 
   const updatedTrajectory = agent.trajectory.map((point) => {
     const relX = point.x - anchorPoint.x;
@@ -506,13 +625,20 @@ function transformAgentTrajectory(
       nextVelocityY = vx * sin + vy * cos;
     }
 
+    let nextZ = point.z;
+    if (applyZTransform) {
+      const sourceZ = typeof point.z === 'number' ? point.z : anchorBaseZ;
+      nextZ = sourceZ + deltaZ;
+    }
+
     return {
       ...point,
       x: nextX,
       y: nextY,
       heading: nextHeading,
       velocityX: nextVelocityX,
-      velocityY: nextVelocityY
+      velocityY: nextVelocityY,
+      ...(applyZTransform ? { z: nextZ } : {})
     };
   });
 
@@ -694,6 +820,7 @@ function smoothTrajectoryHeadings(points: TrajectoryPoint[]): void {
 export type ScenarioSource = 'example' | 'uploaded' | 'blank';
 
 const DEFAULT_FRAME_INTERVAL_MICROS = 100_000;
+const MAX_LANE_VEHICLE_SPAWNS = 250;
 
 export type AgentLabelMode = 'id' | 'index';
 
@@ -793,6 +920,7 @@ interface ScenarioStoreValue {
   ) => boolean;
   removeAllAgents: (scenarioId: string) => boolean;
   spawnVehicleAgent: (scenarioId: string) => ScenarioAgent | undefined;
+  spawnVehiclesOnLanes: (scenarioId: string, count: number) => ScenarioAgent[];
   removeScenario: (id: string) => void;
   loadScenarioFromJson: (payload: {
     json: unknown;
@@ -805,7 +933,7 @@ interface ScenarioStoreValue {
   updateAgentStartPose: (
     scenarioId: string,
     agentId: string,
-    next: { x?: number; y?: number; headingRadians?: number },
+    next: { x?: number; y?: number; z?: number; headingRadians?: number },
     options?: { rotationMode?: 'path' | 'pose' }
   ) => void;
   applyRecordedTrajectory: (
@@ -1567,35 +1695,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       const angle = (existingAgents.length * Math.PI) / 4;
       const spawnX = centerX + Math.cos(angle) * radius;
       const spawnY = centerY + Math.sin(angle) * radius;
-      const frameInterval = scenario.metadata.frameIntervalMicros ?? DEFAULT_FRAME_INTERVAL_MICROS;
-
-      let trajectory: TrajectoryPoint[];
-      if (scenario.frames.length > 0) {
-        trajectory = scenario.frames.map((frame) => ({
-          frameIndex: frame.index,
-          timestampMicros: frame.timestampMicros,
-          x: spawnX,
-          y: spawnY,
-          heading: 0,
-          velocityX: 0,
-          velocityY: 0,
-          speed: 0,
-          valid: true
-        }));
-      } else {
-        const frameCount = scenario.metadata.frameCount > 0 ? scenario.metadata.frameCount : 60;
-        trajectory = Array.from({ length: frameCount }, (_, index) => ({
-          frameIndex: index,
-          timestampMicros: index * frameInterval,
-          x: spawnX,
-          y: spawnY,
-          heading: 0,
-          velocityX: 0,
-          velocityY: 0,
-          speed: 0,
-          valid: true
-        }));
-      }
+      const trajectory = createStationaryTrajectory(scenario, { x: spawnX, y: spawnY });
 
       const nextAgent: ScenarioAgent = {
         id: createResourceId('agent'),
@@ -1615,11 +1715,109 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       setVisibleTrajectoryIds((prev) => {
         const next = new Set(prev);
         next.add(createdAgent!.id);
-        return next;
+      return next;
       });
     }
 
     return createdAgent;
+  }, [activeScenarioId, applyScenarioUpdate, setVisibleTrajectoryIds]);
+
+  const spawnVehiclesOnLanes = useCallback<ScenarioStoreValue['spawnVehiclesOnLanes']>((scenarioId, requestedCount) => {
+    const createdAgents: ScenarioAgent[] = [];
+    const sanitizedCount = Number.isFinite(requestedCount) ? Math.floor(requestedCount) : 0;
+    const count = Math.min(Math.max(sanitizedCount, 0), MAX_LANE_VEHICLE_SPAWNS);
+    if (count <= 0) {
+      return createdAgents;
+    }
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const laneSegments = buildLaneSegments(scenario.roadEdges ?? []);
+      if (laneSegments.length === 0) {
+        return scenario;
+      }
+
+      let cumulativeLength = 0;
+      const weightedSegments = laneSegments.map((segment) => {
+        cumulativeLength += segment.length;
+        return {
+          ...segment,
+          cumulativeLength
+        };
+      });
+
+      if (weightedSegments.length === 0) {
+        return scenario;
+      }
+
+      if (cumulativeLength <= 0) {
+        return scenario;
+      }
+
+      const existingAgents = scenario.agents;
+      const newAgents: ScenarioAgent[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const target = Math.random() * cumulativeLength;
+        let selected = weightedSegments[weightedSegments.length - 1];
+        for (let segIndex = 0; segIndex < weightedSegments.length; segIndex += 1) {
+          const candidate = weightedSegments[segIndex];
+          if (target <= candidate.cumulativeLength) {
+            selected = candidate;
+            break;
+          }
+        }
+
+        const segmentStartLength = selected.cumulativeLength - selected.length;
+        const offset = selected.length > 0 ? (target - segmentStartLength) / selected.length : 0;
+        const t = Math.min(Math.max(offset, 0), 1);
+        const x = selected.start.x + (selected.end.x - selected.start.x) * t;
+        const y = selected.start.y + (selected.end.y - selected.start.y) * t;
+        const startZ = typeof selected.start.z === 'number' ? selected.start.z : undefined;
+        const endZ = typeof selected.end.z === 'number' ? selected.end.z : undefined;
+        let z: number | undefined;
+        if (typeof startZ === 'number' && typeof endZ === 'number') {
+          z = startZ + (endZ - startZ) * t;
+        } else if (typeof startZ === 'number') {
+          z = startZ;
+        } else if (typeof endZ === 'number') {
+          z = endZ;
+        }
+
+        const trajectory = createStationaryTrajectory(scenario, {
+          x,
+          y,
+          z,
+          headingRadians: selected.heading
+        });
+
+        const nextAgent: ScenarioAgent = {
+          id: createResourceId('agent'),
+          type: 'VEHICLE',
+          displayName: `Vehicle ${existingAgents.length + newAgents.length + 1}`,
+          dimensions: { ...DEFAULT_AGENT_DIMENSIONS.VEHICLE },
+          trajectory
+        };
+
+        newAgents.push(nextAgent);
+      }
+
+      if (newAgents.length === 0) {
+        return scenario;
+      }
+
+      createdAgents.push(...newAgents);
+      const nextAgents = [...existingAgents, ...newAgents];
+      return withScenarioRebuild(scenario, nextAgents);
+    });
+
+    if (createdAgents.length > 0 && activeScenarioId === scenarioId) {
+      setVisibleTrajectoryIds((prev) => {
+        const next = new Set(prev);
+        createdAgents.forEach((agent) => next.add(agent.id));
+        return next;
+      });
+    }
+
+    return createdAgents;
   }, [activeScenarioId, applyScenarioUpdate, setVisibleTrajectoryIds]);
 
   const resetEditing = useCallback(() => {
@@ -2071,19 +2269,32 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
       const anchorHeading = anchorPoint.heading ?? 0;
       const targetX = typeof next.x === 'number' ? next.x : anchorPoint.x;
       const targetY = typeof next.y === 'number' ? next.y : anchorPoint.y;
+      const anchorZ = typeof anchorPoint.z === 'number' ? anchorPoint.z : undefined;
+      const targetZ = typeof next.z === 'number' ? next.z : undefined;
       const hasHeadingUpdate = typeof next.headingRadians === 'number';
       const targetHeading = hasHeadingUpdate ? (next.headingRadians as number) : anchorHeading;
       const deltaHeadingForPath = rotationMode === 'path' && hasHeadingUpdate
         ? targetHeading - anchorHeading
         : 0;
+      const needsZTransform = typeof targetZ === 'number'
+        ? typeof anchorZ !== 'number' || Math.abs(targetZ - anchorZ) > 1e-6
+        : false;
 
       const requiresTransform =
         Math.abs(targetX - anchorPoint.x) > 1e-6
         || Math.abs(targetY - anchorPoint.y) > 1e-6
-        || Math.abs(deltaHeadingForPath) > 1e-6;
+        || Math.abs(deltaHeadingForPath) > 1e-6
+        || needsZTransform;
 
       let workingAgent = requiresTransform
-        ? transformAgentTrajectory(agent, anchorPoint, targetX, targetY, deltaHeadingForPath)
+        ? transformAgentTrajectory(
+            agent,
+            anchorPoint,
+            targetX,
+            targetY,
+            deltaHeadingForPath,
+            needsZTransform ? { targetAnchorZ: targetZ } : undefined
+          )
         : agent;
 
       if (rotationMode === 'pose' && hasHeadingUpdate) {
@@ -2609,6 +2820,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     updateAgentAttributes,
     removeAllAgents,
     spawnVehicleAgent,
+    spawnVehiclesOnLanes,
     removeScenario,
     loadScenarioFromJson,
     createBlankScenario,
@@ -2653,6 +2865,7 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     updateAgentAttributes,
     removeAllAgents,
     spawnVehicleAgent,
+    spawnVehiclesOnLanes,
     removeScenario,
     loadScenarioFromJson,
     createBlankScenario,

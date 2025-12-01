@@ -422,7 +422,7 @@ function parseWaymoScenario(raw: RawWaymoScenario): WaymoScenario {
     };
   });
 
-  const roadEdges: RoadEdge[] = roads.map((road, index) => ({
+  let roadEdges: RoadEdge[] = roads.map((road, index) => ({
     id: road.id != null ? String(road.id) : road.map_element_id != null ? String(road.map_element_id) : `road-${index}`,
     points: Array.isArray(road.geometry)
       ? road.geometry.map((point) => ({
@@ -433,6 +433,17 @@ function parseWaymoScenario(raw: RawWaymoScenario): WaymoScenario {
       : [],
     type: mapRoadType(road.type)
   }));
+  const hasLaneEdges = roadEdges.some((edge) => edge.type === 'ROAD_LANE');
+  if (!hasLaneEdges) {
+    const hasRoadLines = roadEdges.some((edge) => edge.type === 'ROAD_LINE');
+    if (hasRoadLines) {
+      roadEdges = roadEdges.map((edge) => (
+        edge.type === 'ROAD_LINE'
+          ? { ...edge, type: 'ROAD_LANE' }
+          : edge
+      ));
+    }
+  }
   const tracksToPredict = extractTracksToPredict(raw, agents.length);
 
   const bounds = computeBoundsFromTrajectories(agents) ?? computeBoundsFromRoadGeometry(roadEdges);

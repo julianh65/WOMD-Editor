@@ -47,6 +47,13 @@ type AgentDetailsDraft = {
   height: string;
 };
 
+type StartPoseDraft = {
+  x: string;
+  y: string;
+  z: string;
+  heading: string;
+};
+
 function ScenarioEditorPanel() {
   const {
     activeScenario,
@@ -66,6 +73,7 @@ function ScenarioEditorPanel() {
     setAgentTrackPrediction,
     removeAllAgents,
     spawnVehicleAgent,
+    spawnVehiclesOnLanes,
     setRoadEdgeType,
     updateRoadEdgePoints,
     updateRoadEdgePoint,
@@ -88,7 +96,7 @@ function ScenarioEditorPanel() {
     setShowTopologyGraph
   } = editing;
   const [localName, setLocalName] = useState('');
-  const [startPoseDraft, setStartPoseDraft] = useState({ x: '', y: '', heading: '' });
+  const [startPoseDraft, setStartPoseDraft] = useState<StartPoseDraft>({ x: '', y: '', z: '', heading: '' });
   const [agentDetailsDraft, setAgentDetailsDraft] = useState<AgentDetailsDraft>({
     type: 'VEHICLE',
     length: '',
@@ -215,8 +223,8 @@ function ScenarioEditorPanel() {
   }, [activeScenario]);
   const selectedRoadEdgeId = editingState.selectedEntity?.kind === 'roadEdge' ? editingState.selectedEntity.id : undefined;
   const roadEdges = useMemo(() => activeScenario?.roadEdges ?? [], [activeScenario?.roadEdges]);
-  const hasLaneEdges = useMemo(
-    () => roadEdges.some((edge) => edge.type === 'ROAD_LANE'),
+  const hasLaneGeometry = useMemo(
+    () => roadEdges.some((edge) => edge.type === 'ROAD_LANE' || edge.type === 'ROAD_LINE'),
     [roadEdges]
   );
   const selectedRoadEdge = useMemo(
@@ -269,7 +277,7 @@ function ScenarioEditorPanel() {
 
   useEffect(() => {
     if (!selectedAgent) {
-      setStartPoseDraft({ x: '', y: '', heading: '' });
+      setStartPoseDraft({ x: '', y: '', z: '', heading: '' });
       setAgentDetailsDraft({
         type: 'VEHICLE',
         length: '',
@@ -281,7 +289,7 @@ function ScenarioEditorPanel() {
 
     const anchorPoint = selectedAgent.trajectory.find((point) => point.valid !== false) ?? selectedAgent.trajectory[0];
     if (!anchorPoint) {
-      setStartPoseDraft({ x: '', y: '', heading: '' });
+      setStartPoseDraft({ x: '', y: '', z: '', heading: '' });
       const fallbackDims = DEFAULT_AGENT_DIMENSIONS[selectedAgent.type];
       setAgentDetailsDraft({
         type: selectedAgent.type,
@@ -296,9 +304,14 @@ function ScenarioEditorPanel() {
       ? (anchorPoint.heading * 180) / Math.PI
       : 0;
 
+    const zString = typeof anchorPoint.z === 'number' && Number.isFinite(anchorPoint.z)
+      ? anchorPoint.z.toFixed(2)
+      : '';
+
     setStartPoseDraft({
       x: anchorPoint.x.toFixed(2),
       y: anchorPoint.y.toFixed(2),
+      z: zString,
       heading: headingDeg.toFixed(1)
     });
 
@@ -324,7 +337,7 @@ function ScenarioEditorPanel() {
     clearSelection();
   }, [clearSelection]);
 
-  const handleStartPoseChange = useCallback((field: 'x' | 'y' | 'heading', value: string) => {
+  const handleStartPoseChange = useCallback((field: 'x' | 'y' | 'z' | 'heading', value: string) => {
     setStartPoseDraft((prev) => ({ ...prev, [field]: value }));
   }, []);
 
@@ -389,6 +402,45 @@ function ScenarioEditorPanel() {
     });
   }, [activeScenarioId, spawnVehicleAgent, selectEntity, pushHistoryEntry]);
 
+  const handleSpawnVehiclesOnLanes = useCallback(() => {
+    if (!activeScenarioId) {
+      return;
+    }
+    if (!hasLaneGeometry) {
+      window.alert('Draw or import lanes before spawning vehicles on lanes.');
+      return;
+    }
+
+    const input = window.prompt('How many vehicles should be spawned on lanes? (max 250)', '5');
+    if (input === null) {
+      return;
+    }
+
+    const trimmed = input.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      window.alert('Enter a positive number of vehicles to spawn.');
+      return;
+    }
+
+    const spawned = spawnVehiclesOnLanes(activeScenarioId, parsed);
+    if (spawned.length === 0) {
+      window.alert('Unable to place vehicles – make sure your lanes have at least two points each.');
+      return;
+    }
+
+    const now = Date.now();
+    pushHistoryEntry({
+      id: `spawn-lanes-${now.toString(36)}`,
+      label: `Spawned ${spawned.length} vehicles on lanes`,
+      timestamp: now
+    });
+  }, [activeScenarioId, hasLaneGeometry, spawnVehiclesOnLanes, pushHistoryEntry]);
+
   const commitStartPose = useCallback(() => {
     if (!activeScenario || !activeScenarioId || !selectedAgent) {
       return;
@@ -401,32 +453,44 @@ function ScenarioEditorPanel() {
 
     const parsedX = Number.parseFloat(startPoseDraft.x);
     const parsedY = Number.parseFloat(startPoseDraft.y);
+    const parsedZ = Number.parseFloat(startPoseDraft.z);
     const parsedHeading = Number.parseFloat(startPoseDraft.heading);
 
     const nextX = Number.isFinite(parsedX) ? parsedX : anchorPoint.x;
     const nextY = Number.isFinite(parsedY) ? parsedY : anchorPoint.y;
+    const requestedZ = Number.isFinite(parsedZ) ? parsedZ : undefined;
+    const anchorZ = typeof anchorPoint.z === 'number' ? anchorPoint.z : undefined;
     const anchorHeadingDeg = typeof anchorPoint.heading === 'number' ? (anchorPoint.heading * 180) / Math.PI : 0;
     const nextHeadingDeg = Number.isFinite(parsedHeading) ? parsedHeading : anchorHeadingDeg;
     const nextHeadingRad = (nextHeadingDeg * Math.PI) / 180;
 
     const epsilon = 1e-4;
+    const zChanged = typeof requestedZ === 'number'
+      ? typeof anchorZ !== 'number' || Math.abs(requestedZ - anchorZ) > epsilon
+      : false;
     const unchanged =
       Math.abs(nextX - anchorPoint.x) < epsilon &&
       Math.abs(nextY - anchorPoint.y) < epsilon &&
-      Math.abs(nextHeadingRad - (anchorPoint.heading ?? 0)) < epsilon;
+      Math.abs(nextHeadingRad - (anchorPoint.heading ?? 0)) < epsilon &&
+      !zChanged;
 
     if (unchanged) {
       return;
     }
 
+    const updates: { x: number; y: number; headingRadians: number; z?: number } = {
+      x: nextX,
+      y: nextY,
+      headingRadians: nextHeadingRad
+    };
+    if (typeof requestedZ === 'number') {
+      updates.z = requestedZ;
+    }
+
     updateAgentStartPose(
       activeScenarioId,
       selectedAgent.id,
-      {
-        x: nextX,
-        y: nextY,
-        headingRadians: nextHeadingRad
-      },
+      updates,
       { rotationMode }
     );
 
@@ -442,6 +506,7 @@ function ScenarioEditorPanel() {
     selectedAgent,
     startPoseDraft.x,
     startPoseDraft.y,
+    startPoseDraft.z,
     startPoseDraft.heading,
     updateAgentStartPose,
     pushHistoryEntry
@@ -972,18 +1037,18 @@ function ScenarioEditorPanel() {
             <span>Lane topology graph</span>
             <input
               type="checkbox"
-              checked={showTopologyGraph && hasLaneEdges}
+              checked={showTopologyGraph && hasLaneGeometry}
               onChange={handleTopologyOverlayToggle}
-              disabled={!hasLaneEdges}
+              disabled={!hasLaneGeometry}
             />
           </label>
-          {hasLaneEdges ? (
+          {hasLaneGeometry ? (
             <p className="selection-note selection-note--muted">
               Blue circles mark lane entries, red circles mark exits, and amber arrows show allowed transitions between lanes.
             </p>
           ) : (
             <p className="selection-note selection-note--muted">
-              Draw or import lanes to enable the drivability graph overlay in the viewer.
+              Draw or import ROAD_LANE or ROAD_LINE edges to enable the drivability graph overlay in the viewer.
             </p>
           )}
         </div>
@@ -1032,6 +1097,15 @@ function ScenarioEditorPanel() {
             <div className="editor-panel__section-actions">
               <button type="button" className="button button--primary" onClick={handleSpawnVehicle}>
                 Spawn Vehicle
+              </button>
+              <button
+                type="button"
+                className="button button--secondary"
+                onClick={handleSpawnVehiclesOnLanes}
+                disabled={!hasLaneGeometry}
+                title={hasLaneGeometry ? undefined : 'Draw or import ROAD_LANE or ROAD_LINE edges to enable this action.'}
+              >
+                Spawn on Lanes
               </button>
               <button type="button" className="button button--secondary" onClick={allVisible ? hideAllTrajectories : showAllTrajectories}>
                 {allVisible ? 'Hide All' : 'Show All'}
@@ -1168,6 +1242,18 @@ function ScenarioEditorPanel() {
                     step="0.05"
                     value={startPoseDraft.y}
                     onChange={(event) => handleStartPoseChange('y', event.target.value)}
+                    onBlur={commitStartPose}
+                    onKeyDown={handleStartPoseKeyDown}
+                    placeholder="0.00"
+                  />
+                </label>
+                <label>
+                  Start Z (m)
+                  <input
+                    type="number"
+                    step="0.05"
+                    value={startPoseDraft.z}
+                    onChange={(event) => handleStartPoseChange('z', event.target.value)}
                     onBlur={commitStartPose}
                     onKeyDown={handleStartPoseKeyDown}
                     placeholder="0.00"

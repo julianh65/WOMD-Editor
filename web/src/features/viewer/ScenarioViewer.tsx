@@ -979,16 +979,27 @@ function resolveEndpointHeading(points: Array<Pick<TrajectoryPoint, 'x' | 'y'>>,
   return undefined;
 }
 
-function computeLaneTopologyGraph(edges?: RoadEdge[]): LaneTopologyGraph {
+function selectLaneCandidateEdges(edges?: RoadEdge[]): RoadEdge[] {
   if (!edges || edges.length === 0) {
+    return [];
+  }
+
+  const lanes = edges.filter((edge) => edge.type === 'ROAD_LANE');
+  if (lanes.length > 0) {
+    return lanes;
+  }
+
+  return edges.filter((edge) => edge.type === 'ROAD_LINE');
+}
+
+function computeLaneTopologyGraph(edges?: RoadEdge[]): LaneTopologyGraph {
+  const candidateEdges = selectLaneCandidateEdges(edges);
+  if (candidateEdges.length === 0) {
     return { lanes: [], connections: [] };
   }
 
   const lanes: LaneEndpoint[] = [];
-  edges.forEach((edge) => {
-    if (edge.type !== 'ROAD_LANE') {
-      return;
-    }
+  candidateEdges.forEach((edge) => {
     if (!edge.points || edge.points.length < 2) {
       return;
     }
