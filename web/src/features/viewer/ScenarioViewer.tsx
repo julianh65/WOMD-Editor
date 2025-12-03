@@ -205,6 +205,8 @@ const LANE_DIRECTION_ARROW_LENGTH_METERS = 4;
 const TOPOLOGY_LINE_BASE_WIDTH_PX = 3.2;
 const TOPOLOGY_ARROW_SIZE_PX = 12;
 const TOPOLOGY_NODE_RADIUS_PX = 7;
+const SCALE_BAR_MARGIN_PX = 24;
+const SCALE_BAR_MAX_WIDTH_PX = 180;
 
 function laneColourFromId(id: string, alpha = 1) {
   let hash = 0;
@@ -235,6 +237,12 @@ interface LaneConnection {
 interface LaneTopologyGraph {
   lanes: LaneEndpoint[];
   connections: LaneConnection[];
+}
+
+interface LineToolOverlayOptions {
+  points: Array<{ x: number; y: number }>;
+  preview?: { x: number; y: number };
+  secondsPerSegment: number;
 }
 
 const GIZMO_TRANSLATE_LENGTH = 3;
@@ -1311,6 +1319,190 @@ function drawAgent(
   }
 }
 
+function formatScaleLabel(distanceMeters: number): string {
+  if (distanceMeters >= 1_000) {
+    const kilometers = distanceMeters / 1_000;
+    const decimals = kilometers >= 10 ? 0 : 1;
+    return `${kilometers.toFixed(decimals)} km`;
+  }
+  if (distanceMeters >= 100) {
+    return `${Math.round(distanceMeters)} m`;
+  }
+  if (distanceMeters >= 10) {
+    return `${distanceMeters.toFixed(0)} m`;
+  }
+  if (distanceMeters >= 1) {
+    return `${distanceMeters.toFixed(1)} m`;
+  }
+  return `${distanceMeters.toFixed(2)} m`;
+}
+
+function drawScaleBar(
+  ctx: CanvasRenderingContext2D,
+  base: CanvasTransform,
+  camera: CameraState,
+  dims: CanvasDims
+) {
+  const pxPerMeter = base.scale * camera.zoom;
+  if (!Number.isFinite(pxPerMeter) || pxPerMeter <= 0) {
+    return;
+  }
+
+  const horizontalPadding = 12;
+  const availableWidth = Math.max(40, dims.width - SCALE_BAR_MARGIN_PX * 2 - horizontalPadding * 2);
+  if (availableWidth <= 0) {
+    return;
+  }
+
+  const targetWidthPx = Math.min(SCALE_BAR_MAX_WIDTH_PX, availableWidth);
+  const metersPerPx = 1 / pxPerMeter;
+  const targetMeters = targetWidthPx * metersPerPx;
+  if (!Number.isFinite(targetMeters) || targetMeters <= 0) {
+    return;
+  }
+
+  const magnitude = 10 ** Math.floor(Math.log10(targetMeters));
+  const normalized = targetMeters / magnitude;
+  let niceFactor = 1;
+  if (normalized >= 5) {
+    niceFactor = 5;
+  } else if (normalized >= 2) {
+    niceFactor = 2;
+  }
+  const niceMeters = niceFactor * magnitude;
+  const barWidthPx = niceMeters / metersPerPx;
+  if (!Number.isFinite(barWidthPx) || barWidthPx <= 0) {
+    return;
+  }
+
+  const fontSize = 12;
+  const barHeight = 8;
+  const labelSpacing = 6;
+  const paddingY = 10;
+  const blockWidth = barWidthPx + horizontalPadding * 2;
+  const blockHeight = fontSize + labelSpacing + barHeight + paddingY * 2;
+  const blockX = SCALE_BAR_MARGIN_PX;
+  const blockY = dims.height - SCALE_BAR_MARGIN_PX - blockHeight;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.rect(blockX, blockY, blockWidth, blockHeight);
+  ctx.fill();
+  ctx.stroke();
+
+  const label = formatScaleLabel(niceMeters);
+  ctx.font = `600 ${fontSize}px "Segoe UI", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#e2e8f0';
+  ctx.fillText(label, blockX + blockWidth / 2, blockY + paddingY);
+
+  const barX = blockX + horizontalPadding;
+  const barY = blockY + paddingY + fontSize + labelSpacing;
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(barX, barY, barWidthPx, barHeight);
+  ctx.strokeStyle = '#0f172a';
+  ctx.strokeRect(barX, barY, barWidthPx, barHeight);
+
+  const midX = barX + barWidthPx / 2;
+  ctx.beginPath();
+  ctx.moveTo(midX, barY);
+  ctx.lineTo(midX, barY + barHeight);
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.65)';
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawLineToolOverlay(
+  ctx: CanvasRenderingContext2D,
+  base: CanvasTransform,
+  camera: CameraState,
+  dims: CanvasDims,
+  options: LineToolOverlayOptions
+) {
+  if (options.points.length === 0) {
+    return;
+  }
+
+  const canvasPoints = options.points.map((point) => worldToCanvas(point, base, camera, dims));
+  const markerRadius = 8;
+
+  ctx.save();
+  ctx.lineWidth = 2;
+
+  if (canvasPoints.length > 1) {
+    ctx.strokeStyle = 'rgba(248, 250, 252, 0.85)';
+    ctx.beginPath();
+    ctx.moveTo(canvasPoints[0].x, canvasPoints[0].y);
+    for (let i = 1; i < canvasPoints.length; i += 1) {
+      ctx.lineTo(canvasPoints[i].x, canvasPoints[i].y);
+    }
+    ctx.stroke();
+  }
+
+  const lastPoint = canvasPoints[canvasPoints.length - 1];
+  if (options.preview) {
+    const previewCanvas = worldToCanvas(options.preview, base, camera, dims);
+    ctx.setLineDash([8, 8]);
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.8)';
+    ctx.beginPath();
+    ctx.moveTo(lastPoint.x, lastPoint.y);
+    ctx.lineTo(previewCanvas.x, previewCanvas.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.fillStyle = '#38bdf8';
+  ctx.strokeStyle = '#0f172a';
+  ctx.beginPath();
+  ctx.arc(canvasPoints[0].x, canvasPoints[0].y, markerRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#f97316';
+  ctx.strokeStyle = '#0f172a';
+  ctx.beginPath();
+  ctx.arc(lastPoint.x, lastPoint.y, markerRadius * 0.85, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  if (canvasPoints.length > 1) {
+    const totalSeconds = Math.max(0, (canvasPoints.length - 1) * options.secondsPerSegment);
+    const label = totalSeconds >= 10 ? `${totalSeconds.toFixed(0)} s` : `${totalSeconds.toFixed(1)} s`;
+    const labelPaddingX = 8;
+    const labelPaddingY = 4;
+    ctx.font = '600 13px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    const metrics = ctx.measureText(label);
+    const labelWidth = metrics.width + labelPaddingX * 2;
+    const labelHeight = 22;
+    const midX = (canvasPoints[0].x + lastPoint.x) / 2;
+    const midY = (canvasPoints[0].y + lastPoint.y) / 2;
+    const rectX = midX - labelWidth / 2;
+    const rectY = midY - labelHeight - markerRadius;
+
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.fillRect(rectX, rectY, labelWidth, labelHeight);
+    ctx.strokeStyle = 'rgba(248, 250, 252, 0.2)';
+    ctx.strokeRect(rectX, rectY, labelWidth, labelHeight);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText(label, rectX + labelWidth / 2, rectY + labelHeight - labelPaddingY);
+  } else if (!options.preview) {
+    ctx.font = '600 12px "Segoe UI", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillText('Click to add waypoint…', canvasPoints[0].x + markerRadius + 6, canvasPoints[0].y - markerRadius);
+  }
+
+  ctx.restore();
+}
+
 function ScenarioViewer() {
   const {
     activeScenario,
@@ -1325,6 +1517,7 @@ function ScenarioViewer() {
     isPlaying,
     setActiveFrameIndex,
     applyRecordedTrajectory,
+    applyPolylineTrajectory,
     updateAgentStartPose,
     addRoadEdge,
     updateRoadEdgePoints,
@@ -1393,6 +1586,9 @@ function ScenarioViewer() {
   useEffect(() => {
     driveSettingsRef.current = driveSettings;
   }, [driveSettings]);
+  const [lineToolSeconds, setLineToolSeconds] = useState(3);
+  const [lineToolPath, setLineToolPath] = useState<Array<{ x: number; y: number }>>([]);
+  const [lineToolPreview, setLineToolPreview] = useState<{ x: number; y: number } | null>(null);
   const editingMode = editingState.mode;
   const activeTool = editingState.activeTool;
   const isRecording = editingState.isRecording;
@@ -1404,7 +1600,13 @@ function ScenarioViewer() {
   const isPointerRecordTool = activeTool === 'trajectory-record';
   const isDriveToolSelected = activeTool === 'trajectory-drive';
   const isPointerRecordActive = isPointerRecordTool && !isDriveActive;
+  const isLineToolActive = activeTool === 'trajectory-line';
   const isPointerRecording = isRecording && !isDriveActive;
+  const lineToolLastPoint = lineToolPath[lineToolPath.length - 1] ?? null;
+  const lineToolSegmentCount = Math.max(lineToolPath.length - 1, 0);
+  const safeLineToolSeconds = Math.max(0.1, Number.isFinite(lineToolSeconds) ? lineToolSeconds : 0.1);
+  const lineToolTotalSeconds = lineToolSegmentCount * safeLineToolSeconds;
+  const canApplyLineTool = lineToolSegmentCount >= 1 && Boolean(selectedAgentId && activeScenarioId);
   const trajectoryDraft = editingState.trajectoryDraft;
   const roadDraft = editingState.roadDraft;
   const selectedRoadId = editingState.selectedEntity?.kind === 'roadEdge' ? editingState.selectedEntity.id : undefined;
@@ -1519,6 +1721,19 @@ function ScenarioViewer() {
 
     return selectedAgentInfo.trajectory.find((point) => point.valid !== false) ?? selectedAgentInfo.trajectory[0];
   }, [selectedAgentInfo]);
+
+  const lineToolBannerText = useMemo(() => {
+    if (!selectedAgentId) {
+      return 'Select a vehicle to overwrite its trajectory.';
+    }
+    if (lineToolPath.length === 0) {
+      return 'Click anywhere on the map to set the starting point.';
+    }
+    if (lineToolPath.length === 1) {
+      return 'Click again to place the first waypoint.';
+    }
+    return 'Keep clicking to add segments, or press Apply Path when ready.';
+  }, [selectedAgentId, lineToolPath.length]);
 
   useEffect(() => {
     if (!isRoadMode) {
@@ -1696,14 +1911,18 @@ function ScenarioViewer() {
     const canvasX = event.clientX - rect.left;
     const canvasY = event.clientY - rect.top;
     const baseContext = baseTransformRef.current;
+    let worldPoint: { x: number; y: number } | undefined;
+    let dims: CanvasDims | undefined;
 
-    if (!isRoadMode || !baseContext || !activeScenario) {
+    if (baseContext) {
+      dims = { width: baseContext.width, height: baseContext.height };
+      worldPoint = canvasToWorld(canvasX, canvasY, baseContext.transform, camera, dims);
+    }
+
+    if (!isRoadMode || !baseContext || !activeScenario || !worldPoint || !dims) {
       setHoveredRoadHandle(undefined);
       setHoveredRoadSegment(undefined);
     } else {
-      const dims: CanvasDims = { width: baseContext.width, height: baseContext.height };
-      const worldPoint = canvasToWorld(canvasX, canvasY, baseContext.transform, camera, dims);
-
       const handleHit = findRoadHandleHit(worldPoint, activeScenario.roadEdges, ROAD_VERTEX_HIT_RADIUS_METERS);
       if (handleHit) {
         setHoveredRoadHandle({ roadId: handleHit.edge.id, pointIndex: handleHit.pointIndex });
@@ -1721,6 +1940,14 @@ function ScenarioViewer() {
           setHoveredRoadHandle(undefined);
           setHoveredRoadSegment(undefined);
         }
+      }
+    }
+
+    if (isLineToolActive) {
+      if (lineToolPath.length > 0 && worldPoint) {
+        setLineToolPreview(worldPoint);
+      } else if (lineToolPath.length === 0) {
+        setLineToolPreview(null);
       }
     }
 
@@ -1748,7 +1975,9 @@ function ScenarioViewer() {
     activeScenario,
     setHoveredRoadHandle,
     setHoveredRoadSegment,
-    camera
+    camera,
+    isLineToolActive,
+    lineToolPath.length
   ]);
 
   const syncDriveControls = useCallback(() => {
@@ -2217,6 +2446,45 @@ function ScenarioViewer() {
     setShowTopologyGraph(!showTopologyGraph);
   }, [setShowTopologyGraph, showTopologyGraph]);
 
+  const handleLineToolReset = useCallback(() => {
+    setLineToolPath([]);
+    setLineToolPreview(null);
+  }, []);
+
+  const handleLineToolApply = useCallback(() => {
+    if (!activeScenarioId || !selectedAgentId || lineToolPath.length < 2) {
+      return;
+    }
+
+    const segmentSeconds = Math.max(0.1, Number.isFinite(lineToolSeconds) ? lineToolSeconds : 0.1);
+    const applied = applyPolylineTrajectory(activeScenarioId, selectedAgentId, {
+      points: lineToolPath,
+      segmentDurationSeconds: segmentSeconds
+    });
+    if (!applied) {
+      return;
+    }
+
+    const agentInfo = agentById.get(selectedAgentId);
+    const now = Date.now();
+    pushHistoryEntry({
+      id: `trajectory-line-${selectedAgentId}-${now.toString(36)}`,
+      label: `Line path for ${agentInfo?.displayName ?? selectedAgentId}`,
+      timestamp: now
+    });
+    const lastPoint = lineToolPath[lineToolPath.length - 1];
+    setLineToolPath(lastPoint ? [lastPoint] : []);
+    setLineToolPreview(lastPoint ?? null);
+  }, [
+    activeScenarioId,
+    selectedAgentId,
+    lineToolPath,
+    lineToolSeconds,
+    applyPolylineTrajectory,
+    agentById,
+    pushHistoryEntry
+  ]);
+
   const finalizeRoadDraft = useCallback(() => {
     if (!activeScenarioId) {
       return false;
@@ -2414,6 +2682,18 @@ function ScenarioViewer() {
   useEffect(() => {
     setCamera({ zoom: INITIAL_ZOOM, panX: 0, panY: 0, rotation: 0 });
   }, [activeScenario?.metadata.id, setCamera]);
+
+  useEffect(() => {
+    if (!isLineToolActive) {
+      setLineToolPath([]);
+      setLineToolPreview(null);
+    }
+  }, [isLineToolActive]);
+
+  useEffect(() => {
+    setLineToolPath([]);
+    setLineToolPreview(null);
+  }, [selectedAgentId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2618,6 +2898,16 @@ function ScenarioViewer() {
     if (selectedAnchorPoint && selectedAgentInfo && !isDriveActive) {
       drawTransformGizmo(ctx, baseTransform, camera, dims, selectedAnchorPoint);
     }
+
+    if (isLineToolActive && lineToolPath.length > 0) {
+      drawLineToolOverlay(ctx, baseTransform, camera, dims, {
+        points: lineToolPath,
+        preview: lineToolPreview ?? undefined,
+        secondsPerSegment: safeLineToolSeconds
+      });
+    }
+
+    drawScaleBar(ctx, baseTransform, camera, dims);
   }, [
     activeScenario,
     activeFrame,
@@ -2647,7 +2937,11 @@ function ScenarioViewer() {
     colorRoadVerticesByElevation,
     roadElevationRange,
     showTopologyGraph,
-    topologyGraph
+    topologyGraph,
+    isLineToolActive,
+    lineToolPath,
+    lineToolPreview,
+    safeLineToolSeconds
   ]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -2746,6 +3040,17 @@ function ScenarioViewer() {
           }
         }
       }
+    }
+
+    if (isPrimaryButton && isLineToolActive && baseContext) {
+      if (!selectedAgentId) {
+        return;
+      }
+      const dims: CanvasDims = { width: baseContext.width, height: baseContext.height };
+      const worldPoint = canvasToWorld(canvasX, canvasY, baseContext.transform, camera, dims);
+      setLineToolPath((prev) => [...prev, worldPoint]);
+      setLineToolPreview(null);
+      return;
     }
 
     if (
@@ -2851,15 +3156,17 @@ function ScenarioViewer() {
     camera,
     getEntityAtCanvasXY,
     insertRoadEdgePoint,
+    isLineToolActive,
     isPointerRecordActive,
     isPlaying,
     isRoadMode,
     play,
-    pushHistoryEntry,
     removeRoadEdgePoint,
     roadDraft,
     selectedAgentId,
     selectedAnchorPoint,
+    setLineToolPath,
+    setLineToolPreview,
     setIsDragging,
     setSelectedRoadHandle,
     updateHoverFromEvent
@@ -3220,6 +3527,9 @@ function ScenarioViewer() {
     setHoveredRoadHandle(undefined);
     setHoveredRoadSegment(undefined);
     hoverEntity(undefined);
+    if (isLineToolActive) {
+      setLineToolPreview(lineToolLastPoint);
+    }
   }, [
     editingState.isRecording,
     cancelTrajectoryRecording,
@@ -3233,7 +3543,9 @@ function ScenarioViewer() {
     pushHistoryEntry,
     activeScenario,
     setHoveredRoadHandle,
-    setHoveredRoadSegment
+    setHoveredRoadSegment,
+    isLineToolActive,
+    lineToolLastPoint
   ]);
 
   const handlePointerCancel = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -3275,6 +3587,9 @@ function ScenarioViewer() {
     setHoveredRoadHandle(undefined);
     setHoveredRoadSegment(undefined);
     hoverEntity(undefined);
+    if (isLineToolActive) {
+      setLineToolPreview(lineToolLastPoint);
+    }
   }, [
     editingState.isRecording,
     cancelTrajectoryRecording,
@@ -3287,7 +3602,9 @@ function ScenarioViewer() {
     pushHistoryEntry,
     activeScenario,
     setHoveredRoadHandle,
-    setHoveredRoadSegment
+    setHoveredRoadSegment,
+    isLineToolActive,
+    lineToolLastPoint
   ]);
 
   const handleWheel = useCallback(
@@ -3407,6 +3724,16 @@ function ScenarioViewer() {
                 <button
                   type="button"
                   className="button button--secondary viewer__toolbar-button"
+                  aria-pressed={isLineToolActive}
+                  onClick={() => handleToolChange('trajectory-line')}
+                  disabled={!selectedAgentId || isDriveActive}
+                >
+                  <span className="viewer__toolbar-button-icon" aria-hidden="true">{TOOLBAR_ICONS.line}</span>
+                  <span>Line Tool</span>
+                </button>
+                <button
+                  type="button"
+                  className="button button--secondary viewer__toolbar-button"
                   aria-pressed={isPointerRecordActive || isPointerRecording}
                   onClick={() => handleToolChange('trajectory-record')}
                   disabled={isDriveActive}
@@ -3429,6 +3756,54 @@ function ScenarioViewer() {
                 </button>
               </div>
             </div>
+          )}
+
+          {isTrajectoryMode && isLineToolActive && (
+            <>
+              <div className="viewer__toolbar-row viewer__toolbar-row--settings">
+                <span className="viewer__toolbar-label">Line Tool</span>
+                <div className="viewer__toolbar-settings">
+                  <label>
+                    <span>Segment Duration {lineToolSeconds >= 10 ? `${lineToolSeconds.toFixed(0)} s` : `${lineToolSeconds.toFixed(1)} s`}</span>
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="30"
+                      step="0.5"
+                      value={lineToolSeconds}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        setLineToolSeconds(Number.isFinite(value) ? Math.max(0.1, value) : 0.5);
+                      }}
+                    />
+                  </label>
+                  <div className="viewer__toolbar-line-info">
+                    <span>{lineToolPath.length} points</span>
+                    <span>{lineToolSegmentCount} segments</span>
+                    <span>Total {lineToolTotalSeconds >= 10 ? lineToolTotalSeconds.toFixed(0) : lineToolTotalSeconds.toFixed(1)} s</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="button button--secondary"
+                    onClick={handleLineToolApply}
+                    disabled={!canApplyLineTool}
+                  >
+                    Apply Path
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--secondary"
+                    onClick={handleLineToolReset}
+                    disabled={lineToolPath.length === 0}
+                  >
+                    Reset Path
+                  </button>
+                </div>
+              </div>
+              <div className="viewer__toolbar-banner">
+                <span>{lineToolBannerText}</span>
+              </div>
+            </>
           )}
 
           {isTrajectoryMode && (isDriveToolSelected || isDriveActive) && (

@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 
-type ToolbarIconKey = 'trajectory' | 'road' | 'adjust' | 'record' | 'drive';
+type ToolbarIconKey = 'trajectory' | 'road' | 'adjust' | 'record' | 'drive' | 'line';
 
 const iconProps = {
   width: 16,
@@ -47,6 +47,13 @@ export const TOOLBAR_ICONS: Record<ToolbarIconKey, ReactElement> = {
       <path d="M9 16h6" />
       <circle cx="9" cy="13.5" r="1.2" />
       <circle cx="15" cy="13.5" r="1.2" />
+    </svg>
+  ),
+  line: (
+    <svg viewBox="0 0 24 24" {...iconProps}>
+      <path d="M5 19L19 5" />
+      <circle cx="5" cy="19" r="2.2" />
+      <circle cx="19" cy="5" r="2.2" />
     </svg>
   )
 };

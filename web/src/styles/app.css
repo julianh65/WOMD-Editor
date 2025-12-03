@@ -488,6 +488,15 @@
   width: 140px;
 }
 
+.viewer__toolbar-line-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: #cbd5f5;
+  min-width: 140px;
+}
+
 .timeline {
   padding: 1rem;
   border-radius: 1rem;

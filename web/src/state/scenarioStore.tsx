@@ -21,7 +21,7 @@ import {
 } from '@/types/scenario';
 
 export type EditingMode = 'trajectory' | 'road';
-export type EditingTool = 'select' | 'trajectory-record' | 'trajectory-drive' | 'trajectory-edit' | 'road-add' | 'road-edit';
+export type EditingTool = 'select' | 'trajectory-record' | 'trajectory-drive' | 'trajectory-edit' | 'trajectory-line' | 'road-add' | 'road-edit';
 export type EditingEntityKind = 'agent' | 'roadEdge';
 
 export interface EditingEntityRef {
@@ -940,6 +940,20 @@ interface ScenarioStoreValue {
     scenarioId: string,
     agentId: string,
     samples: TrajectorySample[]
+  ) => boolean;
+  applyPolylineTrajectory: (
+    scenarioId: string,
+    agentId: string,
+    input: { points: Array<{ x: number; y: number }>; segmentDurationSeconds: number }
+  ) => boolean;
+  applyLinearTrajectory: (
+    scenarioId: string,
+    agentId: string,
+    input: {
+      start: { x: number; y: number };
+      end: { x: number; y: number };
+      durationSeconds: number;
+    }
   ) => boolean;
   addRoadEdge: (
     scenarioId: string,
@@ -2343,6 +2357,58 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     return didUpdate;
   }, [applyScenarioUpdate]);
 
+  const applyPolylineTrajectory = useCallback<ScenarioStoreValue['applyPolylineTrajectory']>((scenarioId, agentId, input) => {
+    if (input.points.length < 2) {
+      return false;
+    }
+
+    let didUpdate = false;
+
+    applyScenarioUpdate(scenarioId, (scenario) => {
+      const agentIndex = scenario.agents.findIndex((agent) => agent.id === agentId);
+      if (agentIndex === -1) {
+        return scenario;
+      }
+
+      const frameInterval = scenario.metadata.frameIntervalMicros ?? DEFAULT_FRAME_INTERVAL_MICROS;
+      const minSeconds = frameInterval / 1_000_000;
+      const safeDurationSeconds = Math.max(input.segmentDurationSeconds, minSeconds);
+      const segmentMs = safeDurationSeconds * 1000;
+      const samples: TrajectorySample[] = input.points.map((point, index) => ({
+        x: point.x,
+        y: point.y,
+        timestampMs: index * segmentMs
+      }));
+      const trajectory = samplesToTrajectoryPoints(samples, frameInterval);
+      if (trajectory.length === 0) {
+        return scenario;
+      }
+
+      didUpdate = true;
+
+      const nextAgents = scenario.agents.map((agent, index) => (
+        index === agentIndex
+          ? { ...agent, trajectory }
+          : agent
+      ));
+
+      return withScenarioRebuild(scenario, nextAgents);
+    });
+
+    return didUpdate;
+  }, [applyScenarioUpdate]);
+
+  const applyLinearTrajectory = useCallback<ScenarioStoreValue['applyLinearTrajectory']>((scenarioId, agentId, input) => {
+    let didUpdate = false;
+
+    didUpdate = applyPolylineTrajectory(scenarioId, agentId, {
+      points: [input.start, input.end],
+      segmentDurationSeconds: input.durationSeconds
+    });
+
+    return didUpdate;
+  }, [applyPolylineTrajectory]);
+
   const addRoadEdge = useCallback<ScenarioStoreValue['addRoadEdge']>((scenarioId, input) => {
     let createdEdge: RoadEdge | undefined;
 
@@ -2827,6 +2893,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     updateScenario,
     updateAgentStartPose,
     applyRecordedTrajectory,
+    applyPolylineTrajectory,
+    applyLinearTrajectory,
     addRoadEdge,
     updateRoadEdgePoints,
     updateRoadEdgePoint,
@@ -2872,6 +2940,8 @@ export function ScenarioStoreProvider({ children }: PropsWithChildren<unknown>) 
     updateScenario,
     updateAgentStartPose,
     applyRecordedTrajectory,
+    applyPolylineTrajectory,
+    applyLinearTrajectory,
     addRoadEdge,
     updateRoadEdgePoints,
     updateRoadEdgePoint,
