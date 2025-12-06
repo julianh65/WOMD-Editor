@@ -47,7 +47,7 @@ interface RoadDrawOptions {
   elevationRange?: { min: number; max: number };
 }
 
-type DragMode = 'pan' | 'record' | 'gizmo-translate-x' | 'gizmo-translate-y' | 'gizmo-rotate' | 'road-handle';
+type DragMode = 'pan' | 'record' | 'gizmo-translate-x' | 'gizmo-translate-y' | 'gizmo-rotate' | 'road-handle' | 'road-select';
 
 interface DragGizmoState {
   kind: 'translate' | 'rotate';
@@ -66,6 +66,13 @@ interface DragRoadHandleState {
   changed: boolean;
 }
 
+interface SelectionBox {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+}
+
 interface DragState {
   active: boolean;
   pointerId: number | null;
@@ -75,6 +82,7 @@ interface DragState {
   mode: DragMode;
   gizmo?: DragGizmoState;
   roadHandle?: DragRoadHandleState;
+  selectionBox?: SelectionBox;
 }
 
 type AgentHighlightState = {
@@ -895,6 +903,75 @@ function distanceToSegment(
   return Math.hypot(point.x - projX, point.y - projY);
 }
 
+interface CanvasRect {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+function normalizeSelectionBox(box: SelectionBox): CanvasRect {
+  const minX = Math.min(box.startX, box.currentX);
+  const maxX = Math.max(box.startX, box.currentX);
+  const minY = Math.min(box.startY, box.currentY);
+  const maxY = Math.max(box.startY, box.currentY);
+  return { minX, maxX, minY, maxY };
+}
+
+function isRectUsable(rect: CanvasRect) {
+  const width = rect.maxX - rect.minX;
+  const height = rect.maxY - rect.minY;
+  return width >= 3 && height >= 3;
+}
+
+function isPointInsideRect(point: { x: number; y: number }, rect: CanvasRect) {
+  return point.x >= rect.minX && point.x <= rect.maxX && point.y >= rect.minY && point.y <= rect.maxY;
+}
+
+function segmentsIntersect(a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }, d: { x: number; y: number }) {
+  const cross = (p: { x: number; y: number }, q: { x: number; y: number }, r: { x: number; y: number }) =>
+    (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+
+  const ab1 = cross(a, b, c);
+  const ab2 = cross(a, b, d);
+  const cd1 = cross(c, d, a);
+  const cd2 = cross(c, d, b);
+
+  if (ab1 === 0 && ab2 === 0 && cd1 === 0 && cd2 === 0) {
+    const minAx = Math.min(a.x, b.x);
+    const maxAx = Math.max(a.x, b.x);
+    const minAy = Math.min(a.y, b.y);
+    const maxAy = Math.max(a.y, b.y);
+    const minCx = Math.min(c.x, d.x);
+    const maxCx = Math.max(c.x, d.x);
+    const minCy = Math.min(c.y, d.y);
+    const maxCy = Math.max(c.y, d.y);
+    const overlapX = maxAx >= minCx && maxCx >= minAx;
+    const overlapY = maxAy >= minCy && maxCy >= minAy;
+    return overlapX && overlapY;
+  }
+
+  return ab1 * ab2 <= 0 && cd1 * cd2 <= 0;
+}
+
+function segmentIntersectsRect(start: { x: number; y: number }, end: { x: number; y: number }, rect: CanvasRect) {
+  if (isPointInsideRect(start, rect) || isPointInsideRect(end, rect)) {
+    return true;
+  }
+
+  const topLeft = { x: rect.minX, y: rect.minY };
+  const topRight = { x: rect.maxX, y: rect.minY };
+  const bottomLeft = { x: rect.minX, y: rect.maxY };
+  const bottomRight = { x: rect.maxX, y: rect.maxY };
+
+  return (
+    segmentsIntersect(start, end, topLeft, topRight)
+    || segmentsIntersect(start, end, topRight, bottomRight)
+    || segmentsIntersect(start, end, bottomRight, bottomLeft)
+    || segmentsIntersect(start, end, bottomLeft, topLeft)
+  );
+}
+
 function projectPointRatioOntoSegment(
   point: { x: number; y: number },
   start: { x: number; y: number },
@@ -1588,6 +1665,24 @@ function drawLineToolOverlay(
   ctx.restore();
 }
 
+function drawSelectionBox(ctx: CanvasRenderingContext2D, box: SelectionBox) {
+  const rect = normalizeSelectionBox(box);
+  const width = rect.maxX - rect.minX;
+  const height = rect.maxY - rect.minY;
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(59, 130, 246, 0.12)';
+  ctx.strokeStyle = 'rgba(59, 130, 246, 0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+  ctx.fillRect(rect.minX, rect.minY, width, height);
+  ctx.strokeRect(rect.minX, rect.minY, width, height);
+  ctx.restore();
+}
+
 function ScenarioViewer() {
   const {
     activeScenario,
@@ -1648,11 +1743,13 @@ function ScenarioViewer() {
     hasMoved: false,
     mode: 'pan',
     gizmo: undefined,
-    roadHandle: undefined
+    roadHandle: undefined,
+    selectionBox: undefined
   });
 
   const [camera, setCamera] = useState<CameraState>({ zoom: INITIAL_ZOOM, panX: 0, panY: 0, rotation: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [isDriveActive, setIsDriveActive] = useState(false);
   const driveSessionRef = useRef<DriveSession | null>(null);
   const driveAnimationRef = useRef<number | null>(null);
@@ -1926,6 +2023,90 @@ function ScenarioViewer() {
     activeTool,
     setEditingTool,
     editingMode
+  ]);
+
+  const selectRoadWithinBox = useCallback((box: SelectionBox) => {
+    const baseContext = baseTransformRef.current;
+    if (!baseContext || !activeScenario) {
+      return;
+    }
+
+    const rect = normalizeSelectionBox(box);
+    if (!isRectUsable(rect)) {
+      return;
+    }
+
+    const dims: CanvasDims = { width: baseContext.width, height: baseContext.height };
+    const rectCenter = {
+      x: (rect.minX + rect.maxX) / 2,
+      y: (rect.minY + rect.maxY) / 2
+    };
+
+    let best:
+      | {
+          edge: RoadEdge;
+          score: number;
+          vertexIndex: number;
+        }
+      | undefined;
+
+    activeScenario.roadEdges.forEach((edge) => {
+      if (!edge.points || edge.points.length === 0) {
+        return;
+      }
+
+      let intersects = false;
+      let closestVertexIndex = 0;
+      let closestVertexDistance = Number.POSITIVE_INFINITY;
+      let closestSegmentDistance = Number.POSITIVE_INFINITY;
+
+      for (let i = 0; i < edge.points.length; i += 1) {
+        const canvasPoint = worldToCanvas(edge.points[i], baseContext.transform, camera, dims);
+        if (isPointInsideRect(canvasPoint, rect)) {
+          intersects = true;
+        }
+        const vertexDistance = Math.hypot(canvasPoint.x - rectCenter.x, canvasPoint.y - rectCenter.y);
+        if (vertexDistance < closestVertexDistance) {
+          closestVertexDistance = vertexDistance;
+          closestVertexIndex = i;
+        }
+      }
+
+      for (let i = 1; i < edge.points.length; i += 1) {
+        const start = worldToCanvas(edge.points[i - 1], baseContext.transform, camera, dims);
+        const end = worldToCanvas(edge.points[i], baseContext.transform, camera, dims);
+        if (segmentIntersectsRect(start, end, rect)) {
+          intersects = true;
+        }
+        const distance = distanceToSegment(rectCenter, start, end);
+        if (distance < closestSegmentDistance) {
+          closestSegmentDistance = distance;
+        }
+      }
+
+      if (!intersects) {
+        return;
+      }
+
+      const score = Math.min(closestSegmentDistance, closestVertexDistance);
+      if (!best || score < best.score) {
+        best = {
+          edge,
+          score,
+          vertexIndex: closestVertexIndex
+        };
+      }
+    });
+
+    if (best) {
+      applySelection({ kind: 'roadEdge', id: best.edge.id });
+      setSelectedRoadHandle({ roadId: best.edge.id, pointIndex: best.vertexIndex });
+    }
+  }, [
+    activeScenario,
+    applySelection,
+    camera,
+    setSelectedRoadHandle
   ]);
 
   const getEntityAtCanvasXY = useCallback((canvasX: number, canvasY: number): EditingEntityRef | undefined => {
@@ -2996,6 +3177,10 @@ function ScenarioViewer() {
       });
     }
 
+    if (selectionBox) {
+      drawSelectionBox(ctx, selectionBox);
+    }
+
     const boundsToDraw = roadGeometryBounds ?? activeScenario.bounds;
     if (boundsToDraw) {
       drawScenarioBounds(ctx, boundsToDraw, baseTransform, camera, dims);
@@ -3036,7 +3221,8 @@ function ScenarioViewer() {
     isLineToolActive,
     lineToolPath,
     lineToolPreview,
-    safeLineToolSeconds
+    safeLineToolSeconds,
+    selectionBox
   ]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -3050,6 +3236,32 @@ function ScenarioViewer() {
     const canvasX = event.clientX - rect.left;
     const canvasY = event.clientY - rect.top;
     const isPrimaryButton = event.button === 0;
+    const isSecondaryButton = event.button === 2;
+
+    if (isSecondaryButton && isRoadMode) {
+      event.preventDefault();
+      const selectionStart: SelectionBox = {
+        startX: canvasX,
+        startY: canvasY,
+        currentX: canvasX,
+        currentY: canvasY
+      };
+      canvas.setPointerCapture(event.pointerId);
+      dragStateRef.current = {
+        active: true,
+        pointerId: event.pointerId,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        hasMoved: false,
+        mode: 'road-select',
+        gizmo: undefined,
+        roadHandle: undefined,
+        selectionBox: selectionStart
+      };
+      setSelectionBox(selectionStart);
+      setIsDragging(false);
+      return;
+    }
 
     if (isPrimaryButton && isRoadMode && baseContext) {
       const dims: CanvasDims = { width: baseContext.width, height: baseContext.height };
@@ -3263,6 +3475,7 @@ function ScenarioViewer() {
     setLineToolPath,
     setLineToolPreview,
     setIsDragging,
+    setSelectionBox,
     setSelectedRoadHandle,
     updateHoverFromEvent
   ]);
@@ -3302,6 +3515,38 @@ function ScenarioViewer() {
         state.hasMoved = true;
       }
 
+      return;
+    }
+
+    if (state.mode === 'road-select') {
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = event.clientX - rect.left;
+      const canvasY = event.clientY - rect.top;
+      const currentBox = state.selectionBox ?? {
+        startX: canvasX,
+        startY: canvasY,
+        currentX: canvasX,
+        currentY: canvasY
+      };
+      const updatedBox: SelectionBox = {
+        ...currentBox,
+        currentX: canvasX,
+        currentY: canvasY
+      };
+      state.selectionBox = updatedBox;
+
+      const travel = Math.abs(updatedBox.currentX - updatedBox.startX) + Math.abs(updatedBox.currentY - updatedBox.startY);
+      if (!state.hasMoved && travel > 2) {
+        state.hasMoved = true;
+        setIsDragging(true);
+      }
+
+      setSelectionBox(updatedBox);
       return;
     }
 
@@ -3418,7 +3663,9 @@ function ScenarioViewer() {
     selectedAgentId,
     updateAgentStartPose,
     rotationMode,
-    updateRoadEdgePoints
+    updateRoadEdgePoints,
+    setIsDragging,
+    setSelectionBox
   ]);
 
   const releasePointerCapture = useCallback((pointerId: number) => {
@@ -3437,15 +3684,27 @@ function ScenarioViewer() {
       hasMoved: false,
       mode: 'pan',
       gizmo: undefined,
-      roadHandle: undefined
+      roadHandle: undefined,
+      selectionBox: undefined
     };
     setIsDragging(false);
-  }, []);
+    setSelectionBox(null);
+  }, [setSelectionBox]);
 
   const handlePointerUp = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
     const state = dragStateRef.current;
 
     if (state.pointerId !== event.pointerId) {
+      releasePointerCapture(event.pointerId);
+      resetDragState();
+      return;
+    }
+
+    if (state.mode === 'road-select') {
+      if (state.selectionBox && state.hasMoved) {
+        selectRoadWithinBox(state.selectionBox);
+      }
+
       releasePointerCapture(event.pointerId);
       resetDragState();
       return;
@@ -3576,7 +3835,8 @@ function ScenarioViewer() {
     resetDragState,
     selectedAgentId,
     pushHistoryEntry,
-    activeScenario
+    activeScenario,
+    selectRoadWithinBox
   ]);
 
   const handlePointerLeave = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -3777,6 +4037,7 @@ function ScenarioViewer() {
           onPointerLeave={handlePointerLeave}
           onPointerCancel={handlePointerCancel}
           onWheel={handleWheel}
+          onContextMenu={(event) => event.preventDefault()}
         />
         <div className="viewer__toolbar">
           <div className="viewer__toolbar-row">
