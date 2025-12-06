@@ -207,6 +207,56 @@ const TOPOLOGY_ARROW_SIZE_PX = 12;
 const TOPOLOGY_NODE_RADIUS_PX = 7;
 const SCALE_BAR_MARGIN_PX = 24;
 const SCALE_BAR_MAX_WIDTH_PX = 180;
+const MIN_BOUND_SPAN_METERS = 40;
+
+function ensureBoundsSpan(bounds: ScenarioBounds, minSpan = MIN_BOUND_SPAN_METERS): ScenarioBounds {
+  let { minX, maxX, minY, maxY } = bounds;
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+
+  if (spanX < minSpan) {
+    const centerX = (minX + maxX) / 2;
+    minX = centerX - minSpan / 2;
+    maxX = centerX + minSpan / 2;
+  }
+
+  if (spanY < minSpan) {
+    const centerY = (minY + maxY) / 2;
+    minY = centerY - minSpan / 2;
+    maxY = centerY + minSpan / 2;
+  }
+
+  return { minX, maxX, minY, maxY };
+}
+
+function computeBoundsFromRoadEdges(edges: RoadEdge[]): ScenarioBounds | undefined {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  let hasPoints = false;
+
+  edges.forEach((edge) => {
+    edge.points.forEach((point) => {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+        return;
+      }
+
+      hasPoints = true;
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    });
+  });
+
+  if (!hasPoints) {
+    return undefined;
+  }
+
+  return ensureBoundsSpan({ minX, maxX, minY, maxY });
+}
 
 function laneColourFromId(id: string, alpha = 1) {
   let hash = 0;
@@ -1417,6 +1467,41 @@ function drawScaleBar(
   ctx.restore();
 }
 
+function drawScenarioBounds(
+  ctx: CanvasRenderingContext2D,
+  bounds: ScenarioBounds,
+  base: CanvasTransform,
+  camera: CameraState,
+  dims: CanvasDims
+) {
+  const corners = [
+    worldToCanvas({ x: bounds.minX, y: bounds.minY }, base, camera, dims),
+    worldToCanvas({ x: bounds.maxX, y: bounds.minY }, base, camera, dims),
+    worldToCanvas({ x: bounds.maxX, y: bounds.maxY }, base, camera, dims),
+    worldToCanvas({ x: bounds.minX, y: bounds.maxY }, base, camera, dims)
+  ];
+
+  if (!corners.every((corner) => Number.isFinite(corner.x) && Number.isFinite(corner.y))) {
+    return;
+  }
+
+  const strokeWidth = Math.max(4, 4 / Math.max(camera.zoom, 0.0001));
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(125, 211, 252, 0.9)';
+  ctx.lineWidth = strokeWidth;
+  ctx.lineJoin = 'round';
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(corners[0].x, corners[0].y);
+  for (let index = 1; index < corners.length; index += 1) {
+    ctx.lineTo(corners[index].x, corners[index].y);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawLineToolOverlay(
   ctx: CanvasRenderingContext2D,
   base: CanvasTransform,
@@ -1638,6 +1723,10 @@ function ScenarioViewer() {
 
     return { min, max };
   }, [activeScenario]);
+  const roadGeometryBounds = useMemo(
+    () => computeBoundsFromRoadEdges(activeScenario?.roadEdges ?? []),
+    [activeScenario?.roadEdges]
+  );
   const colorRoadVerticesByElevation = editingState.colorRoadVerticesByElevation;
   const topologyGraph = useMemo(() => computeLaneTopologyGraph(activeScenario?.roadEdges), [activeScenario?.roadEdges]);
   const selectedRoadEdge = useMemo(() => {
@@ -2907,6 +2996,11 @@ function ScenarioViewer() {
       });
     }
 
+    const boundsToDraw = roadGeometryBounds ?? activeScenario.bounds;
+    if (boundsToDraw) {
+      drawScenarioBounds(ctx, boundsToDraw, baseTransform, camera, dims);
+    }
+
     drawScaleBar(ctx, baseTransform, camera, dims);
   }, [
     activeScenario,
@@ -2936,6 +3030,7 @@ function ScenarioViewer() {
     roadDraft,
     colorRoadVerticesByElevation,
     roadElevationRange,
+    roadGeometryBounds,
     showTopologyGraph,
     topologyGraph,
     isLineToolActive,
