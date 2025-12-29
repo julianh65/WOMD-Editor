@@ -454,7 +454,7 @@ function parseWaymoScenario(raw: RawWaymoScenario): WaymoScenario {
   return {
     metadata: {
       id: raw.scenario_id || raw.name || 'untitled',
-      name: raw.name || raw.scenario_id || 'Waymo Scenario',
+      name: raw.name || raw.scenario_id || 'Scenario',
       frameCount,
       durationSeconds,
       frameIntervalMicros

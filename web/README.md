@@ -1,6 +1,6 @@
-# Waymo Scenario Studio
+# Scenario Editor
 
-A Vite + React based playground for inspecting and editing Waymo Open Motion Dataset (WOMD) scenarios. The current goal is to enable loading JSON exports, visualising them from a top-down perspective, and interactively editing actors, road geometry, and trajectories.
+A Vite + React based playground for inspecting and editing scenario data. It currently supports Waymo Open Motion Dataset (WOMD) JSON exports, with the goal of expanding to additional formats. The current goal is to enable loading JSON exports, visualising them from a top-down perspective, and interactively editing actors, road geometry, and trajectories.
 
 ## Getting started
 
@@ -38,11 +38,11 @@ A Vite + React based playground for inspecting and editing Waymo Open Motion Dat
   - `lib/` – Utility helpers, parsers, and data loading utilities.
   - `state/` – Global state management (scenario registry, selection, etc.).
   - `styles/` – Global and feature-level stylesheets.
-  - `types/` – Shared TypeScript types for WOMD scenario data.
+  - `types/` – Shared TypeScript types for scenario data (currently aligned to WOMD exports).
 
 ## Next steps
 
 - Implement actual rendering of agents, drivable areas, and map geometry on the viewer canvas.
 - Add timeline playback controls and per-frame filtering.
 - Build editing tools for trajectories, road edges, and scenario metadata.
-- Add import/export bridges for native WOMD TFRecord structures.
+- Add import/export bridges for additional scenario formats, including WOMD TFRecord structures.
