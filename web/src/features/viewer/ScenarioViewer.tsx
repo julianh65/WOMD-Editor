@@ -119,6 +119,7 @@ interface RoadSegmentHit {
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
+const MAX_ZOOM_PX_PER_METER = 20;
 const INITIAL_ZOOM = 1.25;
 const DEFAULT_FRAME_INTERVAL_MICROS = 100_000;
 const DRIVE_SETTINGS_DEFAULT: DriveSettings = {
@@ -324,6 +325,17 @@ function computeTransform(bounds: ScenarioBounds | undefined, width = 1, height 
   const offsetY = bounds ? bounds.minY : -safeSpanY / 2;
 
   return { scale, offsetX, offsetY, height };
+}
+
+function getMaxZoom(baseTransform?: CanvasTransform | null) {
+  if (!baseTransform || baseTransform.scale <= 0) {
+    return MAX_ZOOM;
+  }
+  const targetZoom = MAX_ZOOM_PX_PER_METER / baseTransform.scale;
+  if (!Number.isFinite(targetZoom)) {
+    return MAX_ZOOM;
+  }
+  return Math.max(MAX_ZOOM, targetZoom);
 }
 
 function worldToAnchor(point: { x: number; y: number }, base: CanvasTransform, dims: CanvasDims) {
@@ -3029,7 +3041,8 @@ function ScenarioViewer() {
         const targetScale = prevTransform.scale * camera.zoom;
         const nextScale = baseTransform.scale;
         const rawZoom = nextScale > 1e-9 ? targetScale / nextScale : camera.zoom;
-        const clampedZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, rawZoom));
+        const maxZoom = getMaxZoom(baseTransform);
+        const clampedZoom = Math.min(maxZoom, Math.max(MIN_ZOOM, rawZoom));
 
         const newDims: CanvasDims = { width, height };
         const centerX = width / 2;
@@ -3979,8 +3992,10 @@ function ScenarioViewer() {
 
       const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
 
+      const maxZoom = getMaxZoom(baseContext.transform);
+
       setCamera((prev) => {
-        const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.zoom * zoomFactor));
+        const nextZoom = Math.min(maxZoom, Math.max(MIN_ZOOM, prev.zoom * zoomFactor));
         if (Math.abs(nextZoom - prev.zoom) < 0.0001) {
           return prev;
         }
