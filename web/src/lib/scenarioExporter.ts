@@ -92,6 +92,8 @@ export interface WaymoScenarioExportPayload {
   metadata?: Record<string, unknown>;
 }
 
+type TrackPredictionEntry = { track_index: number; difficulty: number };
+
 const TRAJECTORY_LENGTH = 91;
 
 const AGENT_TYPE_TO_RAW: Record<string, string> = {
@@ -135,6 +137,17 @@ function toInteger(value: unknown): number | undefined {
 
 type NumericIdResolver = (sourceId: unknown) => number;
 
+function hashStringToPositiveInt(value: string): number {
+  let hash = 2166136261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0) % 2_147_483_647 || 1;
+}
+
 function createNumericIdResolver(): NumericIdResolver {
   const cache = new Map<string, number>();
   const used = new Set<number>();
@@ -158,10 +171,10 @@ function createNumericIdResolver(): NumericIdResolver {
       return cached;
     }
 
-    let generated: number;
-    do {
-      generated = Math.floor(Math.random() * 1_000_000_000) + 1;
-    } while (used.has(generated));
+    let generated = hashStringToPositiveInt(key);
+    while (used.has(generated)) {
+      generated = generated >= 2_147_483_647 ? 1 : generated + 1;
+    }
 
     reserve(generated);
     cache.set(key, generated);
@@ -269,15 +282,74 @@ function mapRoadToWaymoRoad(edge: WaymoScenario['roadEdges'][number], resolveNum
   return road;
 }
 
-function buildTrackPredictionEntries(indices: number[]): Array<{ track_index: number; difficulty: number }> | undefined {
-  if (!Array.isArray(indices) || indices.length === 0) {
-    return undefined;
+function buildTrackPredictionEntries(indices: number[]): TrackPredictionEntry[] {
+  if (!Array.isArray(indices)) {
+    return [];
   }
 
   return indices.map((trackIndex) => ({
     track_index: trackIndex,
     difficulty: 0
   }));
+}
+
+function normaliseTrackPredictionIndices(entries: TrackPredictionEntry[] | undefined, agentCount: number): number[] {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+
+  const indices = new Set<number>();
+  entries.forEach((entry) => {
+    const trackIndex = toInteger(entry?.track_index);
+    if (trackIndex == null || trackIndex < 0 || trackIndex >= agentCount) {
+      return;
+    }
+    indices.add(trackIndex);
+  });
+
+  return Array.from(indices).sort((a, b) => a - b);
+}
+
+function resolveSdcTrackIndex(
+  metadata: Record<string, unknown>,
+  agentCount: number,
+  trackIndices: number[]
+): number {
+  const nestedScenario = metadata.scenario && typeof metadata.scenario === 'object'
+    ? metadata.scenario as Record<string, unknown>
+    : undefined;
+
+  const candidates = [
+    metadata.sdc_track_index,
+    metadata.sdc_index,
+    nestedScenario?.sdc_track_index,
+    nestedScenario?.sdc_index
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = toInteger(candidate);
+    if (parsed == null) {
+      continue;
+    }
+
+    if (parsed === -1) {
+      return -1;
+    }
+
+    if (parsed >= 0 && parsed < agentCount) {
+      return parsed;
+    }
+  }
+
+  if (trackIndices.length > 0) {
+    return trackIndices[0];
+  }
+
+  if (agentCount > 0) {
+    return 0;
+  }
+
+  return -1;
 }
 
 function cloneIfObject<T>(value: T): T {
@@ -303,8 +375,13 @@ function buildWaymoMetadata(
     : {};
 
   const tracksToPredict = buildTrackPredictionEntries(scenario.tracksToPredict);
-  if (tracksToPredict) {
-    baseMetadata.tracks_to_predict = tracksToPredict;
+  const sdcTrackIndex = resolveSdcTrackIndex(baseMetadata, scenario.agents.length, scenario.tracksToPredict);
+
+  baseMetadata.tracks_to_predict = tracksToPredict;
+  baseMetadata.sdc_track_index = sdcTrackIndex;
+
+  if ('sdc_index' in baseMetadata) {
+    baseMetadata.sdc_index = sdcTrackIndex;
   }
 
   if (scenario.bounds) {
@@ -317,8 +394,14 @@ function buildWaymoMetadata(
     baseMetadata.scenario = {
       ...(baseMetadata.scenario as Record<string, unknown>),
       id: scenarioId,
-      scenario_id: scenarioId
+      scenario_id: scenarioId,
+      tracks_to_predict: tracksToPredict,
+      sdc_track_index: sdcTrackIndex
     };
+
+    if ('sdc_index' in (baseMetadata.scenario as Record<string, unknown>)) {
+      (baseMetadata.scenario as Record<string, unknown>).sdc_index = sdcTrackIndex;
+    }
   }
 
   if (scenario.metadata.frameIntervalMicros != null) {
@@ -351,7 +434,10 @@ export function buildWaymoScenarioExportPayload(scenario: WaymoScenario, options
     scenario_id: scenarioId,
     objects: scenario.agents.map((agent) => mapAgentToWaymoObject(agent, resolveNumericId)),
     roads: scenario.roadEdges.map((edge) => mapRoadToWaymoRoad(edge, resolveNumericId)),
-    tracks_to_predict: buildTrackPredictionEntries(scenario.tracksToPredict),
+    tracks_to_predict: (() => {
+      const entries = buildTrackPredictionEntries(scenario.tracksToPredict);
+      return entries.length > 0 ? entries : undefined;
+    })(),
     tl_states: tlStates,
     metadata: buildWaymoMetadata(scenario, exportedAt, scenarioId)
   };
@@ -529,17 +615,31 @@ function mapRoadTypeCategory(rawType: number): number {
   return type;
 }
 
+function normaliseBinaryEntityId(value: number | string | undefined): number {
+  return toInteger(value) ?? 0;
+}
+
 function buildWaymoBinaryFromPayload(payload: WaymoScenarioExportPayload): Uint8Array {
   const writer = createBinaryWriter();
   const objects = Array.isArray(payload.objects) ? payload.objects : [];
   const roads = Array.isArray(payload.roads) ? payload.roads : [];
+  const scenarioId = normaliseBinaryEntityId(payload.scenario_id);
+  const trackIndices = normaliseTrackPredictionIndices(payload.tracks_to_predict, objects.length);
+  const sdcTrackIndex = resolveSdcTrackIndex(payload.metadata ?? {}, objects.length, trackIndices);
 
+  writer.writeInt(sdcTrackIndex);
+  writer.writeInt(trackIndices.length);
+  trackIndices.forEach((trackIndex) => {
+    writer.writeInt(trackIndex);
+  });
   writer.writeInt(objects.length);
   writer.writeInt(roads.length);
 
   objects.forEach((object) => {
+    writer.writeInt(scenarioId);
     const typeCode = mapAgentTypeToBinary(object.type);
     writer.writeInt(typeCode);
+    writer.writeInt(normaliseBinaryEntityId(object.id));
     writer.writeInt(TRAJECTORY_LENGTH);
 
     const positions = Array.isArray(object.position) ? object.position : [];
@@ -580,6 +680,7 @@ function buildWaymoBinaryFromPayload(payload: WaymoScenarioExportPayload): Uint8
   });
 
   roads.forEach((road) => {
+    writer.writeInt(scenarioId);
     let geometry = Array.isArray(road.geometry)
       ? road.geometry.map((point) => ({
           x: toFiniteOrZero(point.x),
@@ -603,6 +704,7 @@ function buildWaymoBinaryFromPayload(payload: WaymoScenarioExportPayload): Uint8
 
     const encodedRoadType = mapRoadTypeCategory(roadType);
     writer.writeInt(encodedRoadType);
+    writer.writeInt(normaliseBinaryEntityId(road.id));
     writer.writeInt(geometry.length);
 
     (['x', 'y', 'z'] as const).forEach((axis) => {
